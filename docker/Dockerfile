@@ -38,7 +38,7 @@ RUN apk add --no-cache tini ffmpeg ffplay bash curl jq alsa-plugins-pulse font-d
 # Hardware Acceleration for Intel CPU (+50MB)
 ARG TARGETARCH
 
-RUN if [ "${TARGETARCH}" = "amd64" ]; then apk add --no-cache libva-intel-driver intel-media-driver; fi
+RUN if [ "${TARGETARCH}" = "amd64" ]; then apk add --no-cache libva-intel-driver intel-media-driver libva-utils; fi
 
 # Hardware: AMD and NVidia VAAPI (not sure about this)
 # RUN libva-glx mesa-va-gallium

@@ -57,8 +57,19 @@ func MakeHardware(args *ffmpeg.Args, engine string, defaults map[string]string) 
 		case EngineVAAPI:
 			args.Codecs[i] = defaults[name+"/"+engine]
 
+			// Create an explicit VAAPI device and bind it to BOTH the decoder
+			// (-hwaccel_device) and the filter graph (-filter_hw_device). Without
+			// this the `hwupload` filter fails at init with "A hardware device
+			// reference is required to upload frames to". Device path overridable
+			// via the `ffmpeg: { vaapi_device: ... }` config.
+			vaDev := defaults["vaapi_device"]
+			if vaDev == "" {
+				vaDev = "/dev/dri/renderD128"
+			}
+			vaInit := "-init_hw_device vaapi=va:" + vaDev + " -filter_hw_device va -hwaccel vaapi -hwaccel_device va"
+
 			if !args.HasFilters("drawtext=") {
-				args.Input = "-hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_flags allow_profile_mismatch " + args.Input
+				args.Input = vaInit + " -hwaccel_output_format vaapi -hwaccel_flags allow_profile_mismatch " + args.Input
 
 				if name == "h264" {
 					fixPixelFormat(args)
@@ -82,7 +93,7 @@ func MakeHardware(args *ffmpeg.Args, engine string, defaults map[string]string) 
 				args.InsertFilter("format=vaapi|nv12,hwupload")
 			} else {
 				// enable software pixel for drawtext, scale and transpose
-				args.Input = "-hwaccel vaapi -hwaccel_output_format nv12 -hwaccel_flags allow_profile_mismatch " + args.Input
+				args.Input = vaInit + " -hwaccel_output_format nv12 -hwaccel_flags allow_profile_mismatch " + args.Input
 
 				args.AddFilter("hwupload")
 			}
