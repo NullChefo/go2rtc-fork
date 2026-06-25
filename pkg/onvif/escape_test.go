@@ -41,7 +41,9 @@ func TestEmulatedResponsesWellFormed(t *testing.T) {
 
 	wellFormed(t, DeviceCapabilities("h:1", "/onvif/cam&1", true))
 	wellFormed(t, DeviceServices("h:1", "/onvif/cam&1", true))
-	wellFormed(t, DeviceProfilesResponse([]string{`cam&1`, `b"<x`}, true))
+	wellFormed(t, DeviceProfilesResponse([]ProfileInfo{{Token: `cam&1`, Width: 2560, Height: 1440, Codec: "H265"}, {Token: `b"<x`}}, true))
+	wellFormed(t, DeviceVideoSourcesResponse([]ProfileInfo{{Token: `cam&1`, Width: 2560, Height: 1440}}))
+	wellFormed(t, DeviceVideoEncoderConfigurationsResponse([]ProfileInfo{{Token: `c`, Codec: "H264"}}))
 	wellFormed(t, GetVideoSourcesResponse([]string{`cam&1`}))
 	wellFormed(t, GetEventPropertiesResponse())
 	wellFormed(t, EventServiceCapabilitiesResponse())

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,8 +24,34 @@ var deviceStreams = map[string][]profileStream{}
 var devicesMu sync.Mutex
 
 type profileStream struct {
-	token  string
-	stream string
+	token  string // camera profile token
+	stream string // exposed go2rtc stream name (what consumers/ONVIF use)
+	width  int    // advertised resolution (real, from the camera)
+	height int
+	codec  string // effective ONVIF codec the consumer receives (after transcode)
+}
+
+// profileInfos builds the ONVIF emulation profile metadata for a device.
+func profileInfos(device string) []onvif.ProfileInfo {
+	devicesMu.Lock()
+	defer devicesMu.Unlock()
+	list := deviceStreams[device]
+	infos := make([]onvif.ProfileInfo, 0, len(list))
+	for _, ps := range list {
+		infos = append(infos, onvif.ProfileInfo{Token: ps.stream, Width: ps.width, Height: ps.height, Codec: ps.codec})
+	}
+	return infos
+}
+
+// profileInfo looks up one exposed profile by its token (= stream name); falls
+// back to a defaults-only ProfileInfo if unknown.
+func profileInfo(device, token string) onvif.ProfileInfo {
+	for _, info := range profileInfos(device) {
+		if info.Token == token {
+			return info
+		}
+	}
+	return onvif.ProfileInfo{Token: token}
 }
 
 // initDevices builds a persistent session for every camera in the onvif.devices
@@ -166,65 +193,83 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 			streamName = name + "_" + strconv.Itoa(i)
 		}
 
-		if existing := streams.Get(streamName); existing != nil {
-			// A stream with this name already exists. If it points at THIS
-			// device (a deliberate override or a re-run), keep the mapping so
-			// snapshots/emulation resolve to it. If it's an unrelated stream
-			// that merely shares the name, do NOT alias to it — that would
-			// silently serve the wrong camera. Warn and leave this profile
-			// unmapped instead.
-			if streamBelongsToDevice(existing, dev.Host()) {
-				mapping = append(mapping, profileStream{token: p.Token, stream: streamName})
-				log.Debug().Msgf("[onvif] device %q profile %q reuses existing stream %q", name, p.Token, streamName)
-			} else {
-				log.Warn().Msgf("[onvif] device %q profile %q: stream name %q already used by an unrelated source, profile not exposed", name, p.Token, streamName)
-			}
-			continue
+		// don't transcode a JPEG/snapshot profile into h264 video
+		srcCodec := onvif.OnvifCodec(p.Codec)
+		transcodeThis := dev.Transcoding() && srcCodec != "JPEG"
+
+		// effective codec advertised to consumers (after any transcode)
+		codec := srcCodec
+		if transcodeThis && dev.TranscodeVideo() != "" {
+			codec = onvif.OnvifCodec(dev.TranscodeVideo())
 		}
+		ps := profileStream{token: p.Token, stream: streamName, width: p.Width, height: p.Height, codec: codec}
 
 		// credential-free source; ResolveURI injects auth into the resolved URL
-		source := "onvif://" + dev.Host() + "?profile=" + url.QueryEscape(p.Token)
+		rawSource := "onvif://" + dev.Host() + "?profile=" + url.QueryEscape(p.Token)
 
-		if _, err = streams.New(streamName, source); err != nil {
-			log.Error().Err(err).Msgf("[onvif] device %q register stream %q", name, streamName)
-			continue
+		switch {
+		case transcodeThis:
+			// raw camera stream (the single upstream connection) + an ffmpeg
+			// transcode that reads it from go2rtc's own rtsp server. Prefetch
+			// targets the EXPOSED (transcoded) stream so ffmpeg stays running
+			// and consumers attach to a ready stream instantly — keeping the
+			// transcode warm also keeps the one camera connection (its input)
+			// warm, so it's still exactly one connection per profile.
+			rawName := streamName + "_src"
+			exposedSource := "ffmpeg:" + rawName + dev.TranscodeQuery()
+
+			if existing := streams.Get(rawName); existing != nil {
+				if !streamBelongsToDevice(existing, dev.Host()) {
+					log.Warn().Msgf("[onvif] device %q profile %q: raw stream name %q already used by an unrelated source, profile not exposed", name, p.Token, rawName)
+					continue
+				}
+			} else if _, err = streams.New(rawName, rawSource); err != nil {
+				log.Error().Err(err).Msgf("[onvif] device %q register raw %q", name, rawName)
+				continue
+			}
+
+			if existing := streams.Get(streamName); existing != nil {
+				if !streamHasSourcePrefix(existing, "ffmpeg:"+rawName) {
+					log.Warn().Msgf("[onvif] device %q profile %q: stream name %q already used by an unrelated source, profile not exposed", name, p.Token, streamName)
+					continue
+				}
+			} else if _, err = streams.New(streamName, exposedSource); err != nil {
+				log.Error().Err(err).Msgf("[onvif] device %q register transcode %q", name, streamName)
+				continue
+			}
+
+			log.Info().Msgf("[onvif] device %q profile %q -> stream %q (transcode %s)", name, p.Token, streamName, dev.TranscodeQuery())
+
+		default:
+			if existing := streams.Get(streamName); existing != nil {
+				// don't alias onto an unrelated stream that merely shares the name
+				if !streamBelongsToDevice(existing, dev.Host()) {
+					log.Warn().Msgf("[onvif] device %q profile %q: stream name %q already used by an unrelated source, profile not exposed", name, p.Token, streamName)
+					continue
+				}
+				log.Debug().Msgf("[onvif] device %q profile %q reuses existing stream %q", name, p.Token, streamName)
+			} else if _, err = streams.New(streamName, rawSource); err != nil {
+				log.Error().Err(err).Msgf("[onvif] device %q register stream %q", name, streamName)
+				continue
+			} else {
+				log.Info().Msgf("[onvif] device %q profile %q -> stream %q", name, p.Token, streamName)
+			}
 		}
 
-		mapping = append(mapping, profileStream{token: p.Token, stream: streamName})
-		log.Info().Msgf("[onvif] device %q profile %q -> stream %q", name, p.Token, streamName)
+		mapping = append(mapping, ps)
+
+		if dev.PrefetchProfile(p.Token) {
+			if err = streams.AddPreload(streamName, ""); err != nil {
+				log.Warn().Err(err).Msgf("[onvif] device %q prefetch %q", name, streamName)
+			} else {
+				log.Info().Msgf("[onvif] device %q prefetch (always-on) stream %q", name, streamName)
+			}
+		}
 	}
 
 	devicesMu.Lock()
 	deviceStreams[name] = mapping
 	devicesMu.Unlock()
-
-	// Keep selected profiles always connected (prefetch). A lightweight probe
-	// consumer holds the shared producer open, so the single upstream connection
-	// to the camera stays warm even with zero real clients — new clients then
-	// attach instantly. Pair with a light sub-profile for bandwidth-limited WiFi.
-	for _, ps := range mapping {
-		if !dev.PrefetchProfile(ps.token) {
-			continue
-		}
-		if err = streams.AddPreload(ps.stream, ""); err != nil {
-			log.Warn().Err(err).Msgf("[onvif] device %q prefetch stream %q", name, ps.stream)
-		} else {
-			log.Info().Msgf("[onvif] device %q prefetch (always-on) stream %q", name, ps.stream)
-		}
-	}
-}
-
-// deviceStreamNames returns the go2rtc stream names exposed for a device, in
-// profile order (used by the emulated server to list profiles).
-func deviceStreamNames(device string) []string {
-	devicesMu.Lock()
-	defer devicesMu.Unlock()
-	list := deviceStreams[device]
-	names := make([]string, 0, len(list))
-	for _, ps := range list {
-		names = append(names, ps.stream)
-	}
-	return names
 }
 
 // streamToToken maps a go2rtc stream name back to the camera's real profile
@@ -246,6 +291,18 @@ func streamToToken(device, stream string) string {
 func streamBelongsToDevice(s *streams.Stream, host string) bool {
 	for _, src := range s.Sources() {
 		if u, err := url.Parse(src); err == nil && u.Scheme == "onvif" && u.Host == host {
+			return true
+		}
+	}
+	return false
+}
+
+// streamHasSourcePrefix reports whether any of the stream's sources starts with
+// prefix — used to confirm an existing exposed stream is our own ffmpeg
+// transcode (source "ffmpeg:<name>_src...") and not an unrelated stream.
+func streamHasSourcePrefix(s *streams.Stream, prefix string) bool {
+	for _, src := range s.Sources() {
+		if strings.HasPrefix(src, prefix) {
 			return true
 		}
 	}

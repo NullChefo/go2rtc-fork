@@ -18,10 +18,19 @@ type DeviceConfig struct {
 	URL      string   `yaml:"url"`      // onvif://user:pass@host[:port][/path]
 	Name     string   `yaml:"name"`     // optional display name override
 	Snapshot string   `yaml:"snapshot"` // "stream" (default, keyframe from shared stream) | "native" (camera JPEG endpoint)
-	Events   *bool    `yaml:"events"`   // subscribe to camera events (default true)
-	Listen   string   `yaml:"listen"`   // serve a dedicated virtual ONVIF device on this addr (e.g. ":8901")
-	Prefetch []string `yaml:"prefetch"` // profile tokens (or "*") to keep always connected (warm)
-	Profiles []string `yaml:"profiles"` // optional profile-token allowlist (empty = all)
+	Events    *bool            `yaml:"events"`    // subscribe to camera events (default true)
+	Listen    string           `yaml:"listen"`    // serve a dedicated virtual ONVIF device on this addr (e.g. ":8901")
+	Prefetch  []string         `yaml:"prefetch"`  // profile tokens (or "*") to keep always connected (warm)
+	Transcode *TranscodeConfig `yaml:"transcode"` // optional re-encode for compatibility (e.g. UniFi Protect wants H264)
+	Profiles  []string         `yaml:"profiles"`  // optional profile-token allowlist (empty = all)
+}
+
+// TranscodeConfig re-encodes the exposed streams via ffmpeg for clients that
+// need a specific codec (e.g. UniFi Protect prefers H264 video + AAC audio).
+type TranscodeConfig struct {
+	Video    string `yaml:"video"`    // "h264" | "h265" | "" (passthrough)
+	Audio    string `yaml:"audio"`    // "aac" | "opus" | "pcmu" | ... | "" (passthrough)
+	Hardware string `yaml:"hardware"` // "vaapi" (Intel/AMD), "cuda", ... | "" (software)
 }
 
 // DeviceInformation holds the static data from GetDeviceInformation.

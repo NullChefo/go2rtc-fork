@@ -49,36 +49,119 @@ func DeviceServices(host, prefix string, ptz bool) []byte {
 	return e.Bytes()
 }
 
+// ProfileInfo is the per-profile data the emulated media service advertises.
+// Token is the exposed token (= the go2rtc stream name a client requests);
+// Width/Height/Codec describe what the client will actually receive (after any
+// transcode), so the advertised metadata matches the real stream.
+type ProfileInfo struct {
+	Token  string
+	Width  int
+	Height int
+	Codec  string // ONVIF Encoding: H264 / H265 / JPEG
+}
+
+func (p ProfileInfo) wh() (int, int) {
+	if p.Width > 0 && p.Height > 0 {
+		return p.Width, p.Height
+	}
+	return 1920, 1080 // fallback when the camera didn't report a resolution
+}
+
+func (p ProfileInfo) enc() string {
+	if p.Codec != "" {
+		return p.Codec
+	}
+	return "H264"
+}
+
 // DeviceProfilesResponse / DeviceProfileResponse expose the device's go2rtc
-// stream names as ONVIF profile tokens, embedding a PTZConfiguration when the
-// camera has PTZ so downstream clients enable PTZ controls.
-func DeviceProfilesResponse(names []string, ptz bool) []byte {
+// stream names as ONVIF profile tokens, with accurate resolution + codec and a
+// PTZConfiguration when the camera has PTZ.
+func DeviceProfilesResponse(profiles []ProfileInfo, ptz bool) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetProfilesResponse>`)
-	for _, name := range names {
-		appendDeviceProfile(e, "Profiles", name, ptz)
+	for _, p := range profiles {
+		appendDeviceProfile(e, "Profiles", p, ptz)
 	}
 	e.Append(`</trt:GetProfilesResponse>`)
 	return e.Bytes()
 }
 
-func DeviceProfileResponse(name string, ptz bool) []byte {
+func DeviceProfileResponse(p ProfileInfo, ptz bool) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetProfileResponse>`)
-	appendDeviceProfile(e, "Profile", name, ptz)
+	appendDeviceProfile(e, "Profile", p, ptz)
 	e.Append(`</trt:GetProfileResponse>`)
 	return e.Bytes()
 }
 
-func appendDeviceProfile(e *Envelope, tag, name string, ptz bool) {
-	en := escapeXML(name)
-	e.Appendf(`<trt:%s token="%s" fixed="true"><tt:Name>%s</tt:Name>`, tag, en, en)
-	appendVideoSourceConfiguration(e, "VideoSourceConfiguration", name) // escapes internally
-	appendVideoEncoderConfiguration(e, "VideoEncoderConfiguration")
+func appendDeviceProfile(e *Envelope, tag string, p ProfileInfo, ptz bool) {
+	tok := escapeXML(p.Token)
+	e.Appendf(`<trt:%s token="%s" fixed="true"><tt:Name>%s</tt:Name>`, tag, tok, tok)
+	appendDeviceVSC(e, "VideoSourceConfiguration", p)
+	appendDeviceVEC(e, "VideoEncoderConfiguration", p)
 	if ptz {
 		e.Append(`<tt:PTZConfiguration token="ptz0"><tt:Name>PTZ</tt:Name><tt:UseCount>1</tt:UseCount><tt:NodeToken>ptz0</tt:NodeToken></tt:PTZConfiguration>`)
 	}
 	e.Appendf(`</trt:%s>`, tag)
+}
+
+func appendDeviceVSC(e *Envelope, tag string, p ProfileInfo) {
+	tok := escapeXML(p.Token)
+	w, h := p.wh()
+	e.Appendf(`<tt:%s token="%s" fixed="true"><tt:Name>VSC</tt:Name><tt:SourceToken>%s</tt:SourceToken><tt:Bounds x="0" y="0" width="%d" height="%d"></tt:Bounds></tt:%s>`, tag, tok, tok, w, h, tag)
+}
+
+func appendDeviceVEC(e *Envelope, tag string, p ProfileInfo) {
+	w, h := p.wh()
+	codec := p.enc()
+	// unique token per profile (a multi-profile device exposes several VECs)
+	e.Appendf(`<tt:%s token="vec_%s"><tt:Name>VEC</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>0</tt:Quality><tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>8192</tt:BitrateLimit></tt:RateControl>`, tag, escapeXML(p.Token), codec, w, h)
+	if codec == "H265" {
+		e.Append(`<tt:H265><tt:GovLength>10</tt:GovLength><tt:H265Profile>Main</tt:H265Profile></tt:H265>`)
+	} else {
+		e.Append(`<tt:H264><tt:GovLength>10</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>`)
+	}
+	e.Appendf(`<tt:SessionTimeout>PT10S</tt:SessionTimeout></tt:%s>`, tag)
+}
+
+func DeviceVideoSourcesResponse(profiles []ProfileInfo) []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetVideoSourcesResponse>`)
+	for _, p := range profiles {
+		w, h := p.wh()
+		e.Appendf(`<trt:VideoSources token="%s"><tt:Framerate>30.000000</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources>`, escapeXML(p.Token), w, h)
+	}
+	e.Append(`</trt:GetVideoSourcesResponse>`)
+	return e.Bytes()
+}
+
+func DeviceVideoSourceConfigurationsResponse(profiles []ProfileInfo) []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetVideoSourceConfigurationsResponse>`)
+	for _, p := range profiles {
+		appendDeviceVSC(e, "Configurations", p)
+	}
+	e.Append(`</trt:GetVideoSourceConfigurationsResponse>`)
+	return e.Bytes()
+}
+
+func DeviceVideoSourceConfigurationResponse(p ProfileInfo) []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetVideoSourceConfigurationResponse>`)
+	appendDeviceVSC(e, "Configuration", p)
+	e.Append(`</trt:GetVideoSourceConfigurationResponse>`)
+	return e.Bytes()
+}
+
+func DeviceVideoEncoderConfigurationsResponse(profiles []ProfileInfo) []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetVideoEncoderConfigurationsResponse>`)
+	for _, p := range profiles {
+		appendDeviceVEC(e, "Configurations", p)
+	}
+	e.Append(`</trt:GetVideoEncoderConfigurationsResponse>`)
+	return e.Bytes()
 }
 
 // EventServiceCapabilitiesResponse answers GetServiceCapabilities on the event

@@ -100,7 +100,7 @@ func onvifEmulateDevice(w http.ResponseWriter, r *http.Request, name string, dev
 }
 
 func emulateOperation(operation string, b []byte, name string, dev *onvif.Device, r *http.Request, prefix string) ([]byte, error) {
-	names := deviceStreamNames(name)
+	infos := profileInfos(name)
 
 	switch operation {
 	// ---- device service ----
@@ -125,24 +125,25 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 		onvif.DeviceGetNTP,
 		onvif.DeviceGetScopes,
 		onvif.MediaGetVideoEncoderConfiguration,
-		onvif.MediaGetVideoEncoderConfigurations,
 		onvif.MediaGetAudioEncoderConfigurations,
 		onvif.MediaGetVideoEncoderConfigurationOptions,
 		onvif.MediaGetAudioSources,
 		onvif.MediaGetAudioSourceConfigurations:
 		return onvif.StaticResponse(operation), nil
 
-	// ---- media service ----
+	// ---- media service (real resolution + effective codec) ----
 	case onvif.MediaGetVideoSources:
-		return onvif.GetVideoSourcesResponse(names), nil
+		return onvif.DeviceVideoSourcesResponse(infos), nil
 	case onvif.MediaGetProfiles:
-		return onvif.DeviceProfilesResponse(names, dev.HasPTZ()), nil
+		return onvif.DeviceProfilesResponse(infos, dev.HasPTZ()), nil
 	case onvif.MediaGetProfile:
-		return onvif.DeviceProfileResponse(onvif.FindTagValue(b, "ProfileToken"), dev.HasPTZ()), nil
+		return onvif.DeviceProfileResponse(profileInfo(name, onvif.FindTagValue(b, "ProfileToken")), dev.HasPTZ()), nil
 	case onvif.MediaGetVideoSourceConfigurations:
-		return onvif.GetVideoSourceConfigurationsResponse(names), nil
+		return onvif.DeviceVideoSourceConfigurationsResponse(infos), nil
 	case onvif.MediaGetVideoSourceConfiguration:
-		return onvif.GetVideoSourceConfigurationResponse(onvif.FindTagValue(b, "ConfigurationToken")), nil
+		return onvif.DeviceVideoSourceConfigurationResponse(profileInfo(name, onvif.FindTagValue(b, "ConfigurationToken"))), nil
+	case onvif.MediaGetVideoEncoderConfigurations:
+		return onvif.DeviceVideoEncoderConfigurationsResponse(infos), nil
 	case onvif.MediaGetStreamUri:
 		// RTSP is always served by go2rtc's rtsp server, not this ONVIF port.
 		// JoinHostPort keeps IPv6 literals bracketed; omit the port if rtsp is
