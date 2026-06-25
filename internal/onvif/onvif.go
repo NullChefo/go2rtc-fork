@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
+	"github.com/AlexxIT/go2rtc/internal/api/ws"
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/internal/rtsp"
 	"github.com/AlexxIT/go2rtc/internal/streams"
@@ -22,18 +23,71 @@ import (
 func Init() {
 	log = app.GetLogger("onvif")
 
+	var cfg struct {
+		Mod struct {
+			Devices map[string]onvif.DeviceConfig `yaml:"devices"`
+		} `yaml:"onvif"`
+	}
+	app.LoadConfig(&cfg)
+
 	streams.HandleFunc("onvif", streamOnvif)
 
-	// ONVIF server on all suburls
-	api.HandleFunc("/onvif/", onvifDeviceService)
+	// ONVIF server: per-device emulation at /onvif/<device>/..., legacy
+	// aggregate device for everything else
+	api.HandleFunc("/onvif/", onvifRouter)
 
 	// ONVIF client autodiscovery
 	api.HandleFunc("api/onvif", apiOnvif)
+
+	// snapshot for a configured device (stream keyframe or native JPEG)
+	api.HandleFunc("api/onvif/snapshot", apiSnapshot)
+
+	// device control: PTZ, presets, imaging, generic SOAP proxy, info
+	api.HandleFunc("api/onvif/ptz", apiPTZ)
+	api.HandleFunc("api/onvif/presets", apiPresets)
+	api.HandleFunc("api/onvif/imaging", apiImaging)
+	api.HandleFunc("api/onvif/soap", apiSOAP)
+	api.HandleFunc("api/onvif/info", apiInfo)
+
+	// device events fan-out: ws connect to /api/ws?src=<device> + {"type":"onvif"}
+	ws.HandleFunc("onvif", handlerWSOnvif)
+
+	// persistent ONVIF devices from the onvif.devices config section
+	initDevices(cfg.Mod.Devices)
 }
 
 var log zerolog.Logger
 
 func streamOnvif(rawURL string) (core.Producer, error) {
+	// Reuse a persistent device session when this host is a configured
+	// onvif.devices entry: avoids a fresh GetCapabilities handshake on every
+	// (re)connect and lets many streams share one ONVIF control session.
+	// Only divert credential-free sources (auto-registered streams use
+	// onvif://host?profile=token). A hand-written source that carries its own
+	// user:pass falls through to the legacy path so its explicit credentials
+	// are honoured rather than overridden by the device config.
+	if u, err := url.Parse(rawURL); err == nil && u.User == nil {
+		if dev := getDeviceByHost(u.Host); dev != nil {
+			uri, err := dev.ResolveURI(u.Query())
+			if err != nil {
+				return nil, err
+			}
+
+			// Append hash-based arguments to the retrieved URI
+			if i := strings.IndexByte(rawURL, '#'); i > 0 {
+				uri += rawURL[i:]
+			}
+
+			log.Debug().Msgf("[onvif] device uri=%s", uri)
+
+			if err = streams.Validate(uri); err != nil {
+				return nil, err
+			}
+
+			return streams.GetProducer(uri)
+		}
+	}
+
 	client, err := onvif.NewClient(rawURL)
 	if err != nil {
 		return nil, err
@@ -140,7 +194,8 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetStreamUriResponse(uri)
 
 	case onvif.MediaGetSnapshotUri:
-		uri := "http://" + r.Host + "/api/frame.jpeg?src=" + onvif.FindTagValue(b, "ProfileToken")
+		// &cache=1s so a polling NVR doesn't trigger a fresh keyframe grab per request
+		uri := "http://" + r.Host + "/api/frame.jpeg?src=" + url.QueryEscape(onvif.FindTagValue(b, "ProfileToken")) + "&cache=1s"
 		b = onvif.GetSnapshotUriResponse(uri)
 
 	default:

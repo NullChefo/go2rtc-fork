@@ -1,0 +1,63 @@
+package onvif
+
+import (
+	"bytes"
+	"encoding/xml"
+	"io"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+// wellFormed fails the test if b is not well-formed XML.
+func wellFormed(t *testing.T, b []byte) {
+	t.Helper()
+	dec := xml.NewDecoder(bytes.NewReader(b))
+	for {
+		_, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err, "not well-formed XML:\n%s", b)
+	}
+}
+
+func TestEscapeXML(t *testing.T) {
+	require.Equal(t, "a&amp;b&lt;c&gt;d&quot;e&apos;f", escapeXML(`a&b<c>d"e'f`))
+}
+
+func TestEmulatedResponsesWellFormed(t *testing.T) {
+	now := time.Now()
+
+	// the headline review bug: literal &cache=1s made every snapshot response malformed
+	snap := GetSnapshotUriResponse("http://host/api/frame.jpeg?src=cam&cache=1s")
+	wellFormed(t, snap)
+	require.Contains(t, string(snap), "&amp;cache=1s")
+
+	// hostile values from camera events / config must not break the XML
+	stream := GetStreamUriResponse(`rtsp://host:554/cam&"<x`)
+	wellFormed(t, stream)
+
+	wellFormed(t, DeviceCapabilities("h:1", "/onvif/cam&1", true))
+	wellFormed(t, DeviceServices("h:1", "/onvif/cam&1", true))
+	wellFormed(t, DeviceProfilesResponse([]string{`cam&1`, `b"<x`}, true))
+	wellFormed(t, GetVideoSourcesResponse([]string{`cam&1`}))
+	wellFormed(t, GetEventPropertiesResponse())
+	wellFormed(t, EventServiceCapabilitiesResponse())
+	wellFormed(t, CreatePullPointSubscriptionResponse("http://h/onvif/cam&1/Subscription?Idx=1", now))
+	wellFormed(t, RenewResponse(now))
+	wellFormed(t, UnsubscribeResponse())
+
+	// camera-supplied event Topic / SimpleItem values with XML metacharacters
+	ev := Event{
+		Topic:  "tns1:Rule&Engine<x",
+		Time:   `2026-01-01T00:00:00Z`,
+		Source: map[string]string{"Token": `a&b`},
+		Data:   map[string]string{"State": `true"&<`},
+	}
+	pm := PullMessagesResponse([]Event{ev}, now)
+	wellFormed(t, pm) // the real guarantee: parses cleanly despite hostile values
+	require.Contains(t, string(pm), "tns1:Rule&amp;Engine&lt;x")
+	require.Contains(t, string(pm), `Value="true&quot;&amp;&lt;"`)
+}
