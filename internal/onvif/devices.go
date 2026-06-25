@@ -197,6 +197,21 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 	devicesMu.Lock()
 	deviceStreams[name] = mapping
 	devicesMu.Unlock()
+
+	// Keep selected profiles always connected (prefetch). A lightweight probe
+	// consumer holds the shared producer open, so the single upstream connection
+	// to the camera stays warm even with zero real clients — new clients then
+	// attach instantly. Pair with a light sub-profile for bandwidth-limited WiFi.
+	for _, ps := range mapping {
+		if !dev.PrefetchProfile(ps.token) {
+			continue
+		}
+		if err = streams.AddPreload(ps.stream, ""); err != nil {
+			log.Warn().Err(err).Msgf("[onvif] device %q prefetch stream %q", name, ps.stream)
+		} else {
+			log.Info().Msgf("[onvif] device %q prefetch (always-on) stream %q", name, ps.stream)
+		}
+	}
 }
 
 // deviceStreamNames returns the go2rtc stream names exposed for a device, in

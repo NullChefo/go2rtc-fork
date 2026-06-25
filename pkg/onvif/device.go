@@ -20,6 +20,7 @@ type DeviceConfig struct {
 	Snapshot string   `yaml:"snapshot"` // "stream" (default, keyframe from shared stream) | "native" (camera JPEG endpoint)
 	Events   *bool    `yaml:"events"`   // subscribe to camera events (default true)
 	Listen   string   `yaml:"listen"`   // serve a dedicated virtual ONVIF device on this addr (e.g. ":8901")
+	Prefetch []string `yaml:"prefetch"` // profile tokens (or "*") to keep always connected (warm)
 	Profiles []string `yaml:"profiles"` // optional profile-token allowlist (empty = all)
 }
 

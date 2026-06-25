@@ -63,6 +63,12 @@ func (d *Device) ProfileAllowed(token string) bool {
 	return len(d.config.Profiles) == 0 || slices.Contains(d.config.Profiles, token)
 }
 
+// PrefetchProfile reports whether this profile should be kept always connected
+// (prefetch: ['<token>', ...] or prefetch: ['*'] for all).
+func (d *Device) PrefetchProfile(token string) bool {
+	return slices.Contains(d.config.Prefetch, "*") || slices.Contains(d.config.Prefetch, token)
+}
+
 func (d *Device) GetStreamUri(token string) ([]byte, error) {
 	return d.request(d.mediaURL, `<trt:GetStreamUri>
 	<trt:StreamSetup>
