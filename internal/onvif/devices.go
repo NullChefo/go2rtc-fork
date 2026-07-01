@@ -24,11 +24,12 @@ var deviceStreams = map[string][]profileStream{}
 var devicesMu sync.Mutex
 
 type profileStream struct {
-	token  string // camera profile token
-	stream string // exposed go2rtc stream name (what consumers/ONVIF use)
-	width  int    // advertised resolution (real, from the camera)
-	height int
-	codec  string // effective ONVIF codec the consumer receives (after transcode)
+	token   string // camera profile token
+	stream  string // exposed go2rtc stream name (what consumers/ONVIF use)
+	width   int    // advertised resolution (real, from the camera)
+	height  int
+	codec   string // effective ONVIF codec the consumer receives (after transcode)
+	vsToken string // camera VideoSource token (for imaging proxying)
 }
 
 // profileInfos builds the ONVIF emulation profile metadata for a device.
@@ -202,7 +203,7 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 		if transcodeThis && dev.TranscodeVideo() != "" {
 			codec = onvif.OnvifCodec(dev.TranscodeVideo())
 		}
-		ps := profileStream{token: p.Token, stream: streamName, width: p.Width, height: p.Height, codec: codec}
+		ps := profileStream{token: p.Token, stream: streamName, width: p.Width, height: p.Height, codec: codec, vsToken: p.VSToken}
 
 		// credential-free source; ResolveURI injects auth into the resolved URL
 		rawSource := "onvif://" + dev.Host() + "?profile=" + url.QueryEscape(p.Token)
@@ -218,24 +219,30 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 			rawName := streamName + "_src"
 			exposedSource := "ffmpeg:" + rawName + dev.TranscodeQuery()
 
-			if existing := streams.Get(rawName); existing != nil {
-				if !streamBelongsToDevice(existing, dev.Host()) {
-					log.Warn().Msgf("[onvif] device %q profile %q: raw stream name %q already used by an unrelated source, profile not exposed", name, p.Token, rawName)
-					continue
-				}
-			} else if _, err = streams.New(rawName, rawSource); err != nil {
-				log.Error().Err(err).Msgf("[onvif] device %q register raw %q", name, rawName)
+			// validate ownership of BOTH names before creating anything, so a
+			// failed guard can't leave a just-created orphan raw stream behind
+			existingRaw := streams.Get(rawName)
+			if existingRaw != nil && !streamBelongsToDevice(existingRaw, dev.Host()) {
+				log.Warn().Msgf("[onvif] device %q profile %q: raw stream name %q already used by an unrelated source, profile not exposed", name, p.Token, rawName)
+				continue
+			}
+			existingExposed := streams.Get(streamName)
+			if existingExposed != nil && !streamHasSourcePrefix(existingExposed, "ffmpeg:"+rawName) {
+				log.Warn().Msgf("[onvif] device %q profile %q: stream name %q already used by an unrelated source, profile not exposed", name, p.Token, streamName)
 				continue
 			}
 
-			if existing := streams.Get(streamName); existing != nil {
-				if !streamHasSourcePrefix(existing, "ffmpeg:"+rawName) {
-					log.Warn().Msgf("[onvif] device %q profile %q: stream name %q already used by an unrelated source, profile not exposed", name, p.Token, streamName)
+			if existingRaw == nil {
+				if _, err = streams.New(rawName, rawSource); err != nil {
+					log.Error().Err(err).Msgf("[onvif] device %q register raw %q", name, rawName)
 					continue
 				}
-			} else if _, err = streams.New(streamName, exposedSource); err != nil {
-				log.Error().Err(err).Msgf("[onvif] device %q register transcode %q", name, streamName)
-				continue
+			}
+			if existingExposed == nil {
+				if _, err = streams.New(streamName, exposedSource); err != nil {
+					log.Error().Err(err).Msgf("[onvif] device %q register transcode %q", name, streamName)
+					continue
+				}
 			}
 
 			log.Info().Msgf("[onvif] device %q profile %q -> stream %q (transcode %s)", name, p.Token, streamName, dev.TranscodeQuery())
@@ -270,6 +277,19 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 	devicesMu.Lock()
 	deviceStreams[name] = mapping
 	devicesMu.Unlock()
+}
+
+// streamToVSToken maps a go2rtc stream name back to the camera's real
+// VideoSource token, for proxying imaging requests. Empty if unknown.
+func streamToVSToken(device, stream string) string {
+	devicesMu.Lock()
+	defer devicesMu.Unlock()
+	for _, ps := range deviceStreams[device] {
+		if ps.stream == stream {
+			return ps.vsToken
+		}
+	}
+	return ""
 }
 
 // streamToToken maps a go2rtc stream name back to the camera's real profile

@@ -73,7 +73,9 @@ func onvifEmulateDevice(w http.ResponseWriter, r *http.Request, name string, dev
 		// profile tokens back to the camera's real tokens
 		resp, err = dev.ProxySOAP("ptz", remapProfileToken(name, extractSOAPBody(b)))
 	case strings.HasPrefix(service, "imaging"):
-		resp, err = dev.ProxySOAP("imaging", extractSOAPBody(b))
+		// remap our stream-name VideoSourceToken (advertised as SourceToken by
+		// the emulated media service) back to the camera's real one
+		resp, err = dev.ProxySOAP("imaging", remapVideoSourceToken(name, extractSOAPBody(b)))
 	case strings.HasPrefix(service, "event") && operation == onvif.ServiceGetServiceCapabilities:
 		// per-service capabilities must use the event namespace, not media
 		resp = onvif.EventServiceCapabilitiesResponse()
@@ -185,16 +187,16 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 		if to > 60*time.Second {
 			to = 60 * time.Second
 		}
-		events, ok := emuPull(r.URL.Query().Get("Idx"), to)
+		events, ok := emuPull(name, r.URL.Query().Get("Idx"), to)
 		if !ok {
 			return nil, errors.New("unknown subscription")
 		}
 		return onvif.PullMessagesResponse(events, time.Now()), nil
 	case onvif.EventsRenew:
-		emuRenew(r.URL.Query().Get("Idx"))
+		emuRenew(name, r.URL.Query().Get("Idx"))
 		return onvif.RenewResponse(time.Now()), nil
 	case onvif.EventsUnsubscribe:
-		emuUnsubscribe(r.URL.Query().Get("Idx"))
+		emuUnsubscribe(name, r.URL.Query().Get("Idx"))
 		return onvif.UnsubscribeResponse(), nil
 	}
 
@@ -202,6 +204,20 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 }
 
 var reProfileTokenTag = regexp.MustCompile(`(<(?:\w+:)?ProfileToken>)([^<]+)(</(?:\w+:)?ProfileToken>)`)
+
+var reVSTokenTag = regexp.MustCompile(`(<(?:\w+:)?VideoSourceToken>)([^<]+)(</(?:\w+:)?VideoSourceToken>)`)
+
+// remapVideoSourceToken rewrites a VideoSourceToken carrying one of our stream
+// names to the camera's real VideoSource token before proxying imaging SOAP.
+func remapVideoSourceToken(device, frag string) string {
+	return reVSTokenTag.ReplaceAllStringFunc(frag, func(m string) string {
+		sub := reVSTokenTag.FindStringSubmatch(m)
+		if vs := streamToVSToken(device, sub[2]); vs != "" {
+			return sub[1] + vs + sub[3]
+		}
+		return m // unknown: pass through (client may already use the real token)
+	})
+}
 
 // remapProfileToken rewrites the ProfileToken in a downstream SOAP fragment
 // (which carries our stream name) to the camera's real profile token before the

@@ -143,17 +143,19 @@ func emuSubscribe(device string) string {
 	return id
 }
 
-func emuUnsubscribe(id string) {
+func emuUnsubscribe(device, id string) {
 	emuMu.Lock()
-	delete(emuSubs, id)
+	if s := emuSubs[id]; s != nil && s.device == device {
+		delete(emuSubs, id)
+	}
 	emuMu.Unlock()
 }
 
 // emuRenew extends a subscription's lifetime (downstream Renew or PullMessages),
 // honouring the TerminationTime go2rtc advertises.
-func emuRenew(id string) {
+func emuRenew(device, id string) {
 	emuMu.Lock()
-	if s := emuSubs[id]; s != nil {
+	if s := emuSubs[id]; s != nil && s.device == device {
 		s.expires = time.Now().Add(emuTTL)
 	}
 	emuMu.Unlock()
@@ -190,10 +192,15 @@ func emuPush(device string, ev onvif.Event) {
 }
 
 // emuPull blocks up to timeout for the first event, then drains any others
-// already queued (long-poll semantics). Returns nil for an unknown id.
-func emuPull(id string, timeout time.Duration) ([]onvif.Event, bool) {
+// already queued (long-poll semantics). Returns nil for an unknown id — ids are
+// scoped to the emulated device they were minted on, so a subscription cannot
+// be pulled/renewed/cancelled through another device's endpoint.
+func emuPull(device, id string, timeout time.Duration) ([]onvif.Event, bool) {
 	emuMu.Lock()
 	s := emuSubs[id]
+	if s != nil && s.device != device {
+		s = nil
+	}
 	if s != nil {
 		s.expires = time.Now().Add(emuTTL) // active client: keep alive
 	}

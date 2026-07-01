@@ -117,9 +117,12 @@ func appendDeviceVEC(e *Envelope, tag string, p ProfileInfo) {
 	codec := p.enc()
 	// unique token per profile (a multi-profile device exposes several VECs)
 	e.Appendf(`<tt:%s token="vec_%s"><tt:Name>VEC</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>0</tt:Quality><tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>8192</tt:BitrateLimit></tt:RateControl>`, tag, escapeXML(p.Token), codec, w, h)
-	if codec == "H265" {
+	switch codec {
+	case "H265":
 		e.Append(`<tt:H265><tt:GovLength>10</tt:GovLength><tt:H265Profile>Main</tt:H265Profile></tt:H265>`)
-	} else {
+	case "JPEG":
+		// no codec-specific options block for JPEG
+	default:
 		e.Append(`<tt:H264><tt:GovLength>10</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>`)
 	}
 	e.Appendf(`<tt:SessionTimeout>PT10S</tt:SessionTimeout></tt:%s>`, tag)

@@ -11,11 +11,12 @@ import (
 
 // Profile is a parsed ONVIF media profile.
 type Profile struct {
-	Token  string
-	Name   string
-	Width  int
-	Height int
-	Codec  string // VideoEncoder encoding: H264 / H265 / JPEG
+	Token   string
+	Name    string
+	Width   int
+	Height  int
+	Codec   string // VideoEncoder encoding: H264 / H265 / JPEG
+	VSToken string // VideoSource token (needed to proxy imaging requests)
 }
 
 // reProfileBlock captures each full <...Profiles token="...">...</...Profiles>
@@ -31,6 +32,10 @@ var reProfile = regexp.MustCompile(`Profiles\b[^>]*\btoken="([^"]+)"`)
 // Bounds (cameras frequently violate element ordering).
 var reVEC = regexp.MustCompile(`(?s)<(?:\w+:)?VideoEncoderConfiguration\b.*?</(?:\w+:)?VideoEncoderConfiguration>`)
 
+// reVSC isolates the VideoSourceConfiguration to extract the real VideoSource
+// token (SourceToken), which imaging requests must address.
+var reVSC = regexp.MustCompile(`(?s)<(?:\w+:)?VideoSourceConfiguration\b.*?</(?:\w+:)?VideoSourceConfiguration>`)
+
 func parseProfiles(b []byte) []Profile {
 	var profiles []Profile
 	for _, m := range reProfileBlock.FindAllSubmatch(b, -1) {
@@ -39,12 +44,17 @@ func parseProfiles(b []byte) []Profile {
 		if v := reVEC.Find(block); v != nil {
 			vec = v
 		}
+		var vsToken string
+		if v := reVSC.Find(block); v != nil {
+			vsToken = FindTagValue(v, "SourceToken")
+		}
 		profiles = append(profiles, Profile{
-			Token:  string(m[1]),
-			Name:   FindTagValue(block, "Name"),   // profile name (first <Name>)
-			Codec:  FindTagValue(vec, "Encoding"), // video encoding, scoped to the VEC
-			Width:  atoi(FindTagValue(vec, "Width")),
-			Height: atoi(FindTagValue(vec, "Height")),
+			Token:   string(m[1]),
+			Name:    FindTagValue(block, "Name"),   // profile name (first <Name>)
+			Codec:   FindTagValue(vec, "Encoding"), // video encoding, scoped to the VEC
+			Width:   atoi(FindTagValue(vec, "Width")),
+			Height:  atoi(FindTagValue(vec, "Height")),
+			VSToken: vsToken,
 		})
 	}
 	if len(profiles) == 0 {
@@ -115,6 +125,9 @@ func (d *Device) TranscodeVideo() string {
 // is never dropped.
 func (d *Device) TranscodeQuery() string {
 	t := d.config.Transcode
+	if t == nil {
+		return ""
+	}
 	video, audio := "copy", "copy"
 	if t.Video != "" {
 		video = t.Video

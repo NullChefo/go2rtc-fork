@@ -31,3 +31,20 @@ func TestStreamBelongsToDevice(t *testing.T) {
 
 	require.False(t, streamBelongsToDevice(foreign, "10.0.0.5:80")) // not an onvif source
 }
+
+func TestRemapVideoSourceToken(t *testing.T) {
+	devicesMu.Lock()
+	deviceStreams["camv"] = []profileStream{{token: "000", stream: "camv", vsToken: "RealVS0"}}
+	devicesMu.Unlock()
+	t.Cleanup(func() { devicesMu.Lock(); delete(deviceStreams, "camv"); devicesMu.Unlock() })
+
+	in := `<timg:GetImagingSettings><timg:VideoSourceToken>camv</timg:VideoSourceToken></timg:GetImagingSettings>`
+	out := remapVideoSourceToken("camv", in)
+	if out != `<timg:GetImagingSettings><timg:VideoSourceToken>RealVS0</timg:VideoSourceToken></timg:GetImagingSettings>` {
+		t.Fatalf("bad remap: %s", out)
+	}
+	// unknown token passes through untouched
+	if remapVideoSourceToken("camv", `<timg:VideoSourceToken>Other</timg:VideoSourceToken>`) != `<timg:VideoSourceToken>Other</timg:VideoSourceToken>` {
+		t.Fatal("unknown token must pass through")
+	}
+}

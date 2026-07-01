@@ -69,6 +69,7 @@ func TestParseProfileDetails(t *testing.T) {
 	require.Equal(t, "H265", p[0].Codec)
 	require.Equal(t, 2560, p[0].Width) // from Resolution, not Bounds width="9999"
 	require.Equal(t, 1440, p[0].Height)
+	require.Equal(t, "vs0", p[0].VSToken) // SourceToken from the VideoSourceConfiguration
 }
 
 // the video codec must come from the VideoEncoderConfiguration even when an

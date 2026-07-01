@@ -124,13 +124,13 @@ func (c *Client) HasSnapshots() bool {
 
 func (c *Client) GetProfile(token string) ([]byte, error) {
 	return c.Request(
-		c.mediaURL, `<trt:GetProfile><trt:ProfileToken>`+token+`</trt:ProfileToken></trt:GetProfile>`,
+		c.mediaURL, `<trt:GetProfile><trt:ProfileToken>`+escapeXML(token)+`</trt:ProfileToken></trt:GetProfile>`,
 	)
 }
 
 func (c *Client) GetVideoSourceConfiguration(token string) ([]byte, error) {
 	return c.Request(c.mediaURL, `<trt:GetVideoSourceConfiguration>
-	<trt:ConfigurationToken>`+token+`</trt:ConfigurationToken>
+	<trt:ConfigurationToken>`+escapeXML(token)+`</trt:ConfigurationToken>
 </trt:GetVideoSourceConfiguration>`)
 }
 
@@ -140,13 +140,13 @@ func (c *Client) GetStreamUri(token string) ([]byte, error) {
 		<tt:Stream>RTP-Unicast</tt:Stream>
 		<tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport>
 	</trt:StreamSetup>
-	<trt:ProfileToken>`+token+`</trt:ProfileToken>
+	<trt:ProfileToken>`+escapeXML(token)+`</trt:ProfileToken>
 </trt:GetStreamUri>`)
 }
 
 func (c *Client) GetSnapshotUri(token string) ([]byte, error) {
 	return c.Request(
-		c.imaginURL, `<trt:GetSnapshotUri><trt:ProfileToken>`+token+`</trt:ProfileToken></trt:GetSnapshotUri>`,
+		c.imaginURL, `<trt:GetSnapshotUri><trt:ProfileToken>`+escapeXML(token)+`</trt:ProfileToken></trt:GetSnapshotUri>`,
 	)
 }
 
@@ -182,7 +182,9 @@ func (c *Client) Request(url, body string) ([]byte, error) {
 	e := NewEnvelopeWithUser(c.url.User)
 	e.Append(body)
 
-	client := &http.Client{Timeout: time.Second * 5000}
+	// 15s like Device.client — the old `time.Second * 5000` (~83 min) could pin
+	// a goroutine for over an hour on a hung camera
+	client := &http.Client{Timeout: time.Second * 15}
 	res, err := client.Post(url, `application/soap+xml;charset=utf-8`, bytes.NewReader(e.Bytes()))
 	if err != nil {
 		return nil, err

@@ -65,3 +65,18 @@ func TestEventFanoutRejectsUnknown(t *testing.T) {
 	tr.OnWrite(func(msg any) error { return nil })
 	require.Error(t, handlerWSOnvif(tr, nil))
 }
+
+// a subscription minted on one device must not be pullable/renewable/cancellable
+// through another device's emulated endpoint
+func TestEmuSubscriptionDeviceScoping(t *testing.T) {
+	id := emuSubscribe("camA")
+	defer emuUnsubscribe("camA", id)
+
+	if _, ok := emuPull("camB", id, 0); ok {
+		t.Fatal("camB must not pull camA's subscription")
+	}
+	emuUnsubscribe("camB", id) // must be a no-op
+	if _, ok := emuPull("camA", id, 0); !ok {
+		t.Fatal("camA's subscription should still exist")
+	}
+}
