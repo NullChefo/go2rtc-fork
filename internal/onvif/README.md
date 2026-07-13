@@ -52,7 +52,8 @@ onvif:
       url: 'onvif://admin:password@192.168.1.123:8899'  # required
       name: 'Balcony'          # optional display name
       listen: ':8901'          # serve THIS camera as its own ONVIF device on this port
-      profiles: ['000', '001'] # profile-token allowlist (default: all)
+      # profiles: ['000', '001', '002'] # optional allowlist; include every profile when mirroring
+      mirror_profiles: true    # relay the camera's raw GetProfiles XML for strict/vendor NVRs
       prefetch: ['001']        # keep these profiles always connected/warm ('*' = all)
       snapshot: stream         # stream (keyframe, default) | native (camera JPEG)
       events: true             # camera event subscription (default true)
@@ -66,6 +67,7 @@ What you get per device:
 
 - **Streams**: first profile = `balcony`, others `balcony_1`, … (with `transcode`, the raw camera stream is `balcony_src` etc. and the exposed name serves the transcoded output).
 - **Virtual ONVIF camera** on `listen` — point any NVR at `onvif://any:any@<go2rtc>:8901` (credentials are not validated; firewall the port or keep it on a trusted LAN — PTZ/imaging are proxied to the real camera with its stored admin credentials). Announced via WS-Discovery (UDP 3702), so NVR scans find it.
+- **Raw profile mirroring**: `mirror_profiles: true` returns the upstream camera's original `GetProfiles` SOAP envelope, preserving vendor extensions, analytics/PTZ blocks, audio metadata, and other quirks required by strict compatibility filters. `GetStreamUri` is still intercepted and points to go2rtc, so downstream clients remain consumers of the shared stream. Mirroring automatically falls back to the synthetic response if an allowlist or registration failure means not every raw profile is available through go2rtc. When transcoding, the RTSP SDP describes the actual output codecs even if mirrored ONVIF metadata describes the source camera.
 - **Snapshots**: `GET /api/onvif/snapshot?src=balcony[&profile=<token>][&cache=1s]` (302 to `/api/frame.jpeg` in `stream` mode).
 - **Events**: WebSocket `/api/ws?src=balcony` + `{"type":"onvif"}`; also brokered to downstream ONVIF PullPoint subscribers of the virtual camera. One upstream subscription per device.
 - **PTZ**: `GET /api/onvif/ptz?src=balcony&action=continuous|stop|absolute|relative|preset&pan=&tilt=&zoom=&preset=`; presets at `/api/onvif/presets?src=balcony`. Also proxied through the virtual camera's PTZ service.

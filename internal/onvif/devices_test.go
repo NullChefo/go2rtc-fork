@@ -1,10 +1,15 @@
 package onvif
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	ponvif "github.com/AlexxIT/go2rtc/pkg/onvif"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,6 +35,58 @@ func TestStreamBelongsToDevice(t *testing.T) {
 	t.Cleanup(func() { streams.Delete("onvif_foreign_test") })
 
 	require.False(t, streamBelongsToDevice(foreign, "10.0.0.5:80")) // not an onvif source
+}
+
+func TestMirroredProfilesResponse(t *testing.T) {
+	var host string
+	rawProfiles := ponvif.GetProfilesResponse([]string{"000", "001"})
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var resp []byte
+		switch ponvif.GetRequestAction(b) {
+		case ponvif.DeviceGetCapabilities:
+			resp = ponvif.GetCapabilitiesResponse(host)
+		case ponvif.DeviceGetDeviceInformation:
+			resp = ponvif.GetDeviceInformationResponse("H264", "IPC", "1.0", "SN")
+		case ponvif.MediaGetProfiles:
+			resp = rawProfiles
+		default:
+			http.Error(w, "unsupported", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write(resp)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/onvif/device_service", handler)
+	mux.HandleFunc("/onvif/media_service", handler)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	host = strings.TrimPrefix(srv.URL, "http://")
+
+	dev, err := ponvif.NewDevice(ponvif.DeviceConfig{
+		URL:            "onvif://admin:pass@" + host,
+		MirrorProfiles: true,
+	})
+	require.NoError(t, err)
+
+	infos := []ponvif.ProfileInfo{{Token: "000"}, {Token: "001"}}
+	got, ok, err := mirroredProfilesResponse(dev, infos)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, rawProfiles, got)
+
+	// Never expose a raw profile without a corresponding go2rtc stream.
+	_, ok, err = mirroredProfilesResponse(dev, infos[:1])
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	disabled, err := ponvif.NewDevice(ponvif.DeviceConfig{URL: "onvif://" + host})
+	require.NoError(t, err)
+	_, ok, err = mirroredProfilesResponse(disabled, infos)
+	require.NoError(t, err)
+	require.False(t, ok)
 }
 
 // TestExposeCameraToken verifies the emulated device advertises the camera's own

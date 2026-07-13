@@ -16,6 +16,8 @@ import (
 // end, including credential injection.
 func TestDeviceSession(t *testing.T) {
 	var host string // filled once the test server is listening
+	rawProfiles := GetProfilesResponse([]string{"Profile_1", "Profile_2"})
+	profileRequests := 0
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -26,7 +28,8 @@ func TestDeviceSession(t *testing.T) {
 		case DeviceGetDeviceInformation:
 			resp = GetDeviceInformationResponse("ACME", "CamX", "1.0", "SN123")
 		case MediaGetProfiles:
-			resp = GetProfilesResponse([]string{"Profile_1", "Profile_2"})
+			profileRequests++
+			resp = rawProfiles
 		case MediaGetStreamUri:
 			resp = GetStreamUriResponse("rtsp://" + host + "/stream/" + FindTagValue(b, "ProfileToken"))
 		case MediaGetSnapshotUri:
@@ -56,7 +59,7 @@ func TestDeviceSession(t *testing.T) {
 	defer srv.Close()
 	host = strings.TrimPrefix(srv.URL, "http://")
 
-	dev, err := NewDevice(DeviceConfig{URL: "onvif://admin:pass@" + host})
+	dev, err := NewDevice(DeviceConfig{URL: "onvif://admin:pass@" + host, MirrorProfiles: true})
 	require.NoError(t, err)
 	require.NoError(t, dev.Connect())
 
@@ -64,6 +67,19 @@ func TestDeviceSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, profiles, 2)
 	require.Equal(t, "Profile_1", profiles[0].Token)
+	require.True(t, dev.MirrorProfiles())
+
+	// Raw profile mirroring preserves the exact upstream SOAP envelope and
+	// shares the same one-request cache as the parsed profile summary.
+	raw, err := dev.GetProfilesRaw()
+	require.NoError(t, err)
+	require.Equal(t, rawProfiles, raw)
+	require.Equal(t, 1, profileRequests)
+	raw[0] ^= 0xFF // callers receive a defensive copy
+	rawAgain, err := dev.GetProfilesRaw()
+	require.NoError(t, err)
+	require.Equal(t, rawProfiles, rawAgain)
+	require.Equal(t, 1, profileRequests)
 
 	// resolve via the unambiguous profile token; expect creds injected
 	uri, err := dev.ResolveURI(url.Values{"profile": {"Profile_2"}})

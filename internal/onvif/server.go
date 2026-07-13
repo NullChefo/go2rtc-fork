@@ -63,6 +63,36 @@ func isXiongMaiIdentity(manufacturer, model string) bool {
 		strings.HasPrefix(md, "ipc_nt") || strings.Contains(md, "xiongmai")
 }
 
+// mirroredProfilesResponse returns the camera's original GetProfiles envelope
+// when raw mirroring is enabled and every advertised upstream profile has a
+// corresponding registered go2rtc stream. The token/order check prevents an
+// allowlist or a failed stream registration from advertising an unusable raw
+// profile; callers fall back to the synthetic response in that case.
+func mirroredProfilesResponse(dev *onvif.Device, infos []onvif.ProfileInfo) ([]byte, bool, error) {
+	if !dev.MirrorProfiles() {
+		return nil, false, nil
+	}
+
+	profiles, err := dev.GetProfiles()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(profiles) != len(infos) {
+		return nil, false, nil
+	}
+	for i := range profiles {
+		if profiles[i].Token != infos[i].Token {
+			return nil, false, nil
+		}
+	}
+
+	b, err := dev.GetProfilesRaw()
+	if err != nil {
+		return nil, false, err
+	}
+	return b, true, nil
+}
+
 func hostOnly(h string) string {
 	if host, _, err := net.SplitHostPort(h); err == nil {
 		return host
@@ -168,6 +198,11 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 	case onvif.MediaGetVideoSources:
 		return onvif.DeviceVideoSourcesResponse(infos), nil
 	case onvif.MediaGetProfiles:
+		if b, ok, err := mirroredProfilesResponse(dev, infos); err != nil {
+			log.Warn().Err(err).Msgf("[onvif] device %q raw GetProfiles unavailable; using synthetic response", name)
+		} else if ok {
+			return b, nil
+		}
 		return onvif.DeviceProfilesResponse(infos, dev.HasPTZ()), nil
 	case onvif.MediaGetProfile:
 		token := onvif.FindTagValue(b, "ProfileToken")

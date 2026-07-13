@@ -15,14 +15,19 @@ import (
 // DeviceConfig describes a persistent ONVIF camera from the go2rtc config
 // (the `onvif.devices` section).
 type DeviceConfig struct {
-	URL      string   `yaml:"url"`      // onvif://user:pass@host[:port][/path]
-	Name     string   `yaml:"name"`     // optional display name override
-	Snapshot string   `yaml:"snapshot"` // "stream" (default, keyframe from shared stream) | "native" (camera JPEG endpoint)
-	Events    *bool            `yaml:"events"`    // subscribe to camera events (default true)
-	Listen    string           `yaml:"listen"`    // serve a dedicated virtual ONVIF device on this addr (e.g. ":8901")
-	Prefetch  []string         `yaml:"prefetch"`  // profile tokens (or "*") to keep always connected (warm)
-	Transcode *TranscodeConfig `yaml:"transcode"` // optional re-encode for compatibility (e.g. UniFi Protect wants H264)
-	Profiles  []string         `yaml:"profiles"`  // optional profile-token allowlist (empty = all)
+	URL      string `yaml:"url"`      // onvif://user:pass@host[:port][/path]
+	Name     string `yaml:"name"`     // optional display name override
+	Snapshot string `yaml:"snapshot"` // "stream" (default, keyframe from shared stream) | "native" (camera JPEG endpoint)
+	// MirrorProfiles returns the camera's original GetProfiles SOAP response
+	// from the virtual ONVIF device. This preserves vendor extensions and quirks
+	// required by strict NVR compatibility filters; GetStreamUri is still
+	// intercepted so media is served by go2rtc's shared streams.
+	MirrorProfiles bool             `yaml:"mirror_profiles"`
+	Events         *bool            `yaml:"events"`    // subscribe to camera events (default true)
+	Listen         string           `yaml:"listen"`    // serve a dedicated virtual ONVIF device on this addr (e.g. ":8901")
+	Prefetch       []string         `yaml:"prefetch"`  // profile tokens (or "*") to keep always connected (warm)
+	Transcode      *TranscodeConfig `yaml:"transcode"` // optional re-encode for compatibility (e.g. UniFi Protect wants H264)
+	Profiles       []string         `yaml:"profiles"`  // optional profile-token allowlist (empty = all)
 }
 
 // TranscodeConfig re-encodes the exposed streams via ffmpeg for clients that
@@ -59,11 +64,12 @@ type Device struct {
 	client      *http.Client // control calls (short timeout)
 	eventClient *http.Client // event long-poll (no global timeout; context-governed)
 
-	mu        sync.Mutex
-	connected bool
-	hasEvents bool
-	info      DeviceInformation
-	profiles  []Profile
+	mu          sync.Mutex
+	connected   bool
+	hasEvents   bool
+	info        DeviceInformation
+	profiles    []Profile
+	profilesRaw []byte
 }
 
 func NewDevice(config DeviceConfig) (*Device, error) {

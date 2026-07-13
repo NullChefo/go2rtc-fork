@@ -1,6 +1,7 @@
 package onvif
 
 import (
+	"bytes"
 	"errors"
 	"html"
 	"net/url"
@@ -65,18 +66,20 @@ func parseProfiles(b []byte) []Profile {
 	return profiles
 }
 
-// GetProfiles returns the camera's media profiles, fetching and caching them on
-// first call.
-func (d *Device) GetProfiles() ([]Profile, error) {
+// getProfilesResponse returns the camera's original GetProfiles SOAP response,
+// fetching and caching both the raw XML and its parsed profile summary on the
+// first call. Keeping the original bytes allows a virtual ONVIF device to
+// preserve vendor extensions and schema quirks used by strict NVR filters.
+func (d *Device) getProfilesResponse() ([]byte, error) {
 	if err := d.Connect(); err != nil {
 		return nil, err
 	}
 
 	d.mu.Lock()
-	if d.profiles != nil {
-		profiles := d.profiles
+	if d.profilesRaw != nil {
+		b := bytes.Clone(d.profilesRaw)
 		d.mu.Unlock()
-		return profiles, nil
+		return b, nil
 	}
 	d.mu.Unlock()
 
@@ -88,10 +91,42 @@ func (d *Device) GetProfiles() ([]Profile, error) {
 	profiles := parseProfiles(b)
 
 	d.mu.Lock()
-	d.profiles = profiles
+	// Another concurrent caller may have completed the same first fetch. Keep
+	// the first complete response as the stable device description.
+	if d.profilesRaw == nil {
+		d.profilesRaw = bytes.Clone(b)
+		d.profiles = profiles
+	}
+	b = bytes.Clone(d.profilesRaw)
 	d.mu.Unlock()
 
+	return b, nil
+}
+
+// GetProfiles returns the camera's parsed media profile summary. The returned
+// slice is a copy so callers cannot mutate the persistent device cache.
+func (d *Device) GetProfiles() ([]Profile, error) {
+	if _, err := d.getProfilesResponse(); err != nil {
+		return nil, err
+	}
+
+	d.mu.Lock()
+	profiles := slices.Clone(d.profiles)
+	d.mu.Unlock()
 	return profiles, nil
+}
+
+// GetProfilesRaw returns an exact copy of the upstream camera's original
+// GetProfiles SOAP envelope. GetStreamUri is intentionally not part of this
+// response and remains intercepted by the virtual device.
+func (d *Device) GetProfilesRaw() ([]byte, error) {
+	return d.getProfilesResponse()
+}
+
+// MirrorProfiles reports whether the virtual ONVIF device should return the
+// upstream camera's original GetProfiles response instead of synthesizing one.
+func (d *Device) MirrorProfiles() bool {
+	return d.config.MirrorProfiles
 }
 
 // ProfileAllowed reports whether the profile token passes the optional config
