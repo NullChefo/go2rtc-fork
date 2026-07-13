@@ -298,13 +298,19 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 	}()
 }
 
-// streamToVSToken maps a go2rtc stream name back to the camera's real
-// VideoSource token, for proxying imaging requests. Empty if unknown.
-func streamToVSToken(device, stream string) string {
+// streamToVSToken maps an emulated VideoSource token back to the camera's real
+// one, for proxying imaging requests. The emulated device advertises the single
+// shared source "V_SRC_000" (real-camera shape); stream names are accepted too.
+// Empty if unknown.
+func streamToVSToken(device, token string) string {
 	devicesMu.Lock()
 	defer devicesMu.Unlock()
-	for _, ps := range deviceStreams[device] {
-		if ps.stream == stream {
+	list := deviceStreams[device]
+	if token == "V_SRC_000" && len(list) > 0 {
+		return list[0].vsToken // the one shared source = the camera's own
+	}
+	for _, ps := range list {
+		if ps.stream == token {
 			return ps.vsToken
 		}
 	}

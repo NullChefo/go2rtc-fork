@@ -1,6 +1,9 @@
 package onvif
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // Operation local-names (from GetRequestAction) for the emulated event service.
 const (
@@ -82,37 +85,77 @@ func (p ProfileInfo) enc() string {
 	return "H264"
 }
 
+// deviceSource models the ONE physical video/audio source shared by all of a
+// device's profiles. Real cameras (and XMEye NVR channel-matching in
+// particular) expect main+sub profiles to reference the SAME VideoSource; a
+// device advertising one source per profile looks like a multi-channel encoder
+// and XM NVRs never map it to a channel (no GetStreamUri, "Not Logged In").
+type deviceSource struct {
+	W, H  int // sensor resolution = main (first) profile's resolution
+	Count int // number of profiles sharing the source (UseCount)
+}
+
+// MainSource derives the shared source from the profile list (first = main).
+func MainSource(profiles []ProfileInfo) deviceSource {
+	src := deviceSource{W: 1920, H: 1080, Count: len(profiles)}
+	if len(profiles) > 0 {
+		src.W, src.H = profiles[0].wh()
+	}
+	if src.Count == 0 {
+		src.Count = 1
+	}
+	return src
+}
+
+// profileName mimics XM camera naming: NVRs of the same family match
+// mainStream/subStream when assigning channel streams.
+func profileName(idx int) string {
+	switch idx {
+	case 0:
+		return "mainStream"
+	case 1:
+		return "subStream"
+	default:
+		return "extraStream" + itoa(idx)
+	}
+}
+
+func itoa(i int) string { return strconv.Itoa(i) }
+
 // DeviceProfilesResponse / DeviceProfileResponse expose the device's go2rtc
-// stream names as ONVIF profile tokens, with accurate resolution + codec and a
+// stream names as ONVIF profile tokens, with accurate resolution + codec, one
+// shared Video/AudioSource across profiles (real-camera shape) and a
 // PTZConfiguration when the camera has PTZ.
 func DeviceProfilesResponse(profiles []ProfileInfo, ptz bool) []byte {
+	src := MainSource(profiles)
 	e := NewEnvelope()
 	e.Append(`<trt:GetProfilesResponse>`)
-	for _, p := range profiles {
-		appendDeviceProfile(e, "Profiles", p, ptz)
+	for i, p := range profiles {
+		appendDeviceProfile(e, "Profiles", p, i, src, ptz)
 	}
 	e.Append(`</trt:GetProfilesResponse>`)
 	return e.Bytes()
 }
 
-func DeviceProfileResponse(p ProfileInfo, ptz bool) []byte {
+func DeviceProfileResponse(p ProfileInfo, idx int, src deviceSource, ptz bool) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetProfileResponse>`)
-	appendDeviceProfile(e, "Profile", p, ptz)
+	appendDeviceProfile(e, "Profile", p, idx, src, ptz)
 	e.Append(`</trt:GetProfileResponse>`)
 	return e.Bytes()
 }
 
-func appendDeviceProfile(e *Envelope, tag string, p ProfileInfo, ptz bool) {
+func appendDeviceProfile(e *Envelope, tag string, p ProfileInfo, idx int, src deviceSource, ptz bool) {
 	tok := escapeXML(p.Token)
-	e.Appendf(`<trt:%s token="%s" fixed="true"><tt:Name>%s</tt:Name>`, tag, tok, tok)
-	appendDeviceVSC(e, "VideoSourceConfiguration", p)
+	e.Appendf(`<trt:%s token="%s" fixed="true"><tt:Name>%s</tt:Name>`, tag, tok, profileName(idx))
+	appendDeviceVSC(e, "VideoSourceConfiguration", src)
 	// schema order: AudioSourceConfiguration between VSC and VEC. Strict
 	// (gSOAP-based) clients like XMEye NVRs require the audio configurations
-	// and reject profiles without them.
-	e.Appendf(`<tt:AudioSourceConfiguration token="asc_%s"><tt:Name>ASC</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>asrc_%s</tt:SourceToken></tt:AudioSourceConfiguration>`, tok, tok)
-	appendDeviceVEC(e, "VideoEncoderConfiguration", p)
-	e.Appendf(`<tt:AudioEncoderConfiguration token="aec_%s"><tt:Name>AEC</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Bitrate>128</tt:Bitrate><tt:SampleRate>8</tt:SampleRate>%s<tt:SessionTimeout>PT10S</tt:SessionTimeout></tt:AudioEncoderConfiguration>`, tok, p.audioEnc(), multicastBlock)
+	// and reject profiles without them. One shared audio source, like a real
+	// camera.
+	e.Appendf(`<tt:AudioSourceConfiguration token="A_SRC_CFG_000"><tt:Name>A_SRC_CFG_000</tt:Name><tt:UseCount>%d</tt:UseCount><tt:SourceToken>AudioSourceToken</tt:SourceToken></tt:AudioSourceConfiguration>`, src.Count)
+	appendDeviceVEC(e, "VideoEncoderConfiguration", p, idx)
+	e.Appendf(`<tt:AudioEncoderConfiguration token="aec_%s"><tt:Name>A_ENC_%03d</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Bitrate>128</tt:Bitrate><tt:SampleRate>8</tt:SampleRate>%s<tt:SessionTimeout>PT10S</tt:SessionTimeout></tt:AudioEncoderConfiguration>`, tok, idx, p.audioEnc(), multicastBlock)
 	if ptz {
 		e.Append(`<tt:PTZConfiguration token="ptz0"><tt:Name>PTZ</tt:Name><tt:UseCount>1</tt:UseCount><tt:NodeToken>ptz0</tt:NodeToken></tt:PTZConfiguration>`)
 	}
@@ -123,18 +166,19 @@ func appendDeviceProfile(e *Envelope, tag string, p ProfileInfo, ptz bool) {
 // strict parsers (XMEye/gSOAP) fail the whole document without it.
 const multicastBlock = `<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address><tt:Port>0</tt:Port><tt:TTL>1</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>`
 
-func appendDeviceVSC(e *Envelope, tag string, p ProfileInfo) {
-	tok := escapeXML(p.Token)
-	w, h := p.wh()
+// appendDeviceVSC emits the ONE shared VideoSourceConfiguration (token/source
+// V_SRC_000, sensor = main resolution), mirroring real XM cameras.
+func appendDeviceVSC(e *Envelope, tag string, src deviceSource) {
 	// UseCount is schema-mandatory (Name, UseCount, SourceToken, Bounds)
-	e.Appendf(`<tt:%s token="%s" fixed="true"><tt:Name>VSC</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken><tt:Bounds x="0" y="0" width="%d" height="%d"></tt:Bounds></tt:%s>`, tag, tok, tok, w, h, tag)
+	e.Appendf(`<tt:%s token="V_SRC_000"><tt:Name>V_SRC_CFG_000</tt:Name><tt:UseCount>%d</tt:UseCount><tt:SourceToken>V_SRC_000</tt:SourceToken><tt:Bounds x="0" y="0" width="%d" height="%d"></tt:Bounds></tt:%s>`, tag, src.Count, src.W, src.H, tag)
 }
 
-func appendDeviceVEC(e *Envelope, tag string, p ProfileInfo) {
+func appendDeviceVEC(e *Envelope, tag string, p ProfileInfo, idx int) {
 	w, h := p.wh()
 	codec := p.enc()
-	// unique token per profile (a multi-profile device exposes several VECs)
-	e.Appendf(`<tt:%s token="vec_%s"><tt:Name>VEC</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>0</tt:Quality><tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>8192</tt:BitrateLimit></tt:RateControl>`, tag, escapeXML(p.Token), codec, w, h)
+	// unique token per profile (a multi-profile device exposes several VECs);
+	// 25 fps metadata stays within PAL-mode channel caps on XM NVRs
+	e.Appendf(`<tt:%s token="vec_%s"><tt:Name>V_ENC_%03d</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>0</tt:Quality><tt:RateControl><tt:FrameRateLimit>25</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>8192</tt:BitrateLimit></tt:RateControl>`, tag, escapeXML(p.Token), idx, codec, w, h)
 	switch codec {
 	case "H265":
 		e.Append(`<tt:H265><tt:GovLength>10</tt:GovLength><tt:H265Profile>Main</tt:H265Profile></tt:H265>`)
@@ -147,13 +191,13 @@ func appendDeviceVEC(e *Envelope, tag string, p ProfileInfo) {
 	e.Appendf(`<tt:SessionTimeout>PT10S</tt:SessionTimeout></tt:%s>`, tag)
 }
 
+// DeviceVideoSourcesResponse advertises the ONE physical video source (like a
+// real camera), not one per profile.
 func DeviceVideoSourcesResponse(profiles []ProfileInfo) []byte {
+	src := MainSource(profiles)
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoSourcesResponse>`)
-	for _, p := range profiles {
-		w, h := p.wh()
-		e.Appendf(`<trt:VideoSources token="%s"><tt:Framerate>30.000000</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources>`, escapeXML(p.Token), w, h)
-	}
+	e.Appendf(`<trt:VideoSources token="V_SRC_000"><tt:Framerate>25.000000</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources>`, src.W, src.H)
 	e.Append(`</trt:GetVideoSourcesResponse>`)
 	return e.Bytes()
 }
@@ -161,17 +205,15 @@ func DeviceVideoSourcesResponse(profiles []ProfileInfo) []byte {
 func DeviceVideoSourceConfigurationsResponse(profiles []ProfileInfo) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoSourceConfigurationsResponse>`)
-	for _, p := range profiles {
-		appendDeviceVSC(e, "Configurations", p)
-	}
+	appendDeviceVSC(e, "Configurations", MainSource(profiles))
 	e.Append(`</trt:GetVideoSourceConfigurationsResponse>`)
 	return e.Bytes()
 }
 
-func DeviceVideoSourceConfigurationResponse(p ProfileInfo) []byte {
+func DeviceVideoSourceConfigurationResponse(profiles []ProfileInfo) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoSourceConfigurationResponse>`)
-	appendDeviceVSC(e, "Configuration", p)
+	appendDeviceVSC(e, "Configuration", MainSource(profiles))
 	e.Append(`</trt:GetVideoSourceConfigurationResponse>`)
 	return e.Bytes()
 }
@@ -179,8 +221,8 @@ func DeviceVideoSourceConfigurationResponse(p ProfileInfo) []byte {
 func DeviceVideoEncoderConfigurationsResponse(profiles []ProfileInfo) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoEncoderConfigurationsResponse>`)
-	for _, p := range profiles {
-		appendDeviceVEC(e, "Configurations", p)
+	for i, p := range profiles {
+		appendDeviceVEC(e, "Configurations", p, i)
 	}
 	e.Append(`</trt:GetVideoEncoderConfigurationsResponse>`)
 	return e.Bytes()

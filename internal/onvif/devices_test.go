@@ -47,4 +47,8 @@ func TestRemapVideoSourceToken(t *testing.T) {
 	if remapVideoSourceToken("camv", `<timg:VideoSourceToken>Other</timg:VideoSourceToken>`) != `<timg:VideoSourceToken>Other</timg:VideoSourceToken>` {
 		t.Fatal("unknown token must pass through")
 	}
+	// the emulated shared source token maps to the camera's real one
+	if remapVideoSourceToken("camv", `<timg:VideoSourceToken>V_SRC_000</timg:VideoSourceToken>`) != `<timg:VideoSourceToken>RealVS0</timg:VideoSourceToken>` {
+		t.Fatal("V_SRC_000 must map to the device's real source token")
+	}
 }

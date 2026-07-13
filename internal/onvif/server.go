@@ -139,11 +139,19 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 	case onvif.MediaGetProfiles:
 		return onvif.DeviceProfilesResponse(infos, dev.HasPTZ()), nil
 	case onvif.MediaGetProfile:
-		return onvif.DeviceProfileResponse(profileInfo(name, onvif.FindTagValue(b, "ProfileToken")), dev.HasPTZ()), nil
+		token := onvif.FindTagValue(b, "ProfileToken")
+		idx := 0
+		for i, info := range infos {
+			if info.Token == token {
+				idx = i
+				break
+			}
+		}
+		return onvif.DeviceProfileResponse(profileInfo(name, token), idx, onvif.MainSource(infos), dev.HasPTZ()), nil
 	case onvif.MediaGetVideoSourceConfigurations:
 		return onvif.DeviceVideoSourceConfigurationsResponse(infos), nil
 	case onvif.MediaGetVideoSourceConfiguration:
-		return onvif.DeviceVideoSourceConfigurationResponse(profileInfo(name, onvif.FindTagValue(b, "ConfigurationToken"))), nil
+		return onvif.DeviceVideoSourceConfigurationResponse(infos), nil
 	case onvif.MediaGetVideoEncoderConfigurations:
 		return onvif.DeviceVideoEncoderConfigurationsResponse(infos), nil
 	case onvif.MediaGetStreamUri:
