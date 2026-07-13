@@ -148,6 +148,11 @@ func onvifEmulateDevice(w http.ResponseWriter, r *http.Request, name string, dev
 
 	log.Trace().Msgf("[onvif] emulate response:\n%s", resp)
 	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
+	// Always send an explicit length. Go otherwise switches larger responses
+	// (notably GetProfiles) to HTTP chunked transfer encoding. Some older XM
+	// ONVIF clients accept the smaller fixed-length discovery responses but stop
+	// parsing at the first chunked one and never proceed to GetStreamUri.
+	w.Header().Set("Content-Length", strconv.Itoa(len(resp)))
 	if _, err = w.Write(resp); err != nil {
 		log.Error().Err(err).Caller().Send()
 	}

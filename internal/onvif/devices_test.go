@@ -89,6 +89,39 @@ func TestMirroredProfilesResponse(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestEmulatedSOAPResponseHasContentLength(t *testing.T) {
+	devicesMu.Lock()
+	deviceStreams["camlen"] = []profileStream{{token: "000", stream: "camlen"}}
+	devicesMu.Unlock()
+	t.Cleanup(func() {
+		devicesMu.Lock()
+		delete(deviceStreams, "camlen")
+		devicesMu.Unlock()
+	})
+
+	dev, err := ponvif.NewDevice(ponvif.DeviceConfig{URL: "onvif://127.0.0.1"})
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(deviceONVIFHandler("camlen", dev))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/onvif/media_service", strings.NewReader(
+		`<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:trt="http://www.onvif.org/ver10/media/wsdl"><s:Body><trt:GetProfiles/></s:Body></s:Envelope>`,
+	))
+	require.NoError(t, err)
+	req.Close = true // XM_ONVIF Filter sends Connection: close
+
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NotEmpty(t, body)
+	require.Equal(t, int64(len(body)), resp.ContentLength)
+	require.Empty(t, resp.TransferEncoding)
+	require.True(t, resp.Close)
+}
+
 // TestExposeCameraToken verifies the emulated device advertises the camera's own
 // profile token (e.g. "000"), like a real XM camera, and that GetStreamUri's
 // token->stream mapping resolves it back to the go2rtc stream name. XMEye NVRs
