@@ -58,6 +58,25 @@ func TestExposeCameraToken(t *testing.T) {
 	require.Equal(t, "zzz", tokenToStream("camx", "zzz"))
 }
 
+// TestEmulatedIdentity verifies XM/XiongMai device identities are neutralized
+// (so XMEye NVRs use ONVIF RTSP, not the native protocol) while other cameras
+// keep their real manufacturer/model.
+func TestEmulatedIdentity(t *testing.T) {
+	// the real XM camera in this project
+	m, mod := emulatedIdentity("H264", "IPC_NT98566_IPG-N4C-WQ2_S38")
+	require.Equal(t, "go2rtc", m)
+	require.Equal(t, "go2rtc", mod)
+
+	require.True(t, isXiongMaiIdentity("H264", "IPC_NT98566_IPG-N4C-WQ2_S38"))
+	require.True(t, isXiongMaiIdentity("XiongMai", "anything"))
+
+	// a non-XM camera keeps its real identity
+	require.False(t, isXiongMaiIdentity("Hikvision", "DS-2CD2032"))
+	m, mod = emulatedIdentity("Hikvision", "DS-2CD2032")
+	require.Equal(t, "Hikvision", m)
+	require.Equal(t, "DS-2CD2032", mod)
+}
+
 func TestRemapVideoSourceToken(t *testing.T) {
 	devicesMu.Lock()
 	deviceStreams["camv"] = []profileStream{{token: "000", stream: "camv", vsToken: "RealVS0"}}

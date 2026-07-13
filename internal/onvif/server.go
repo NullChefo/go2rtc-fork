@@ -41,6 +41,28 @@ func deviceONVIFHandler(name string, dev *onvif.Device) http.HandlerFunc {
 	}
 }
 
+// emulatedIdentity returns the manufacturer/model to advertise for the emulated
+// device. An XM/XiongMai identity is replaced with a neutral one so XMEye NVRs
+// stay on the standard ONVIF RTSP path (see the DeviceGetDeviceInformation
+// handler); non-XM cameras keep their real identity for clients that use it.
+func emulatedIdentity(manufacturer, model string) (string, string) {
+	if isXiongMaiIdentity(manufacturer, model) {
+		return "go2rtc", "go2rtc"
+	}
+	return manufacturer, model
+}
+
+// isXiongMaiIdentity reports whether the ONVIF device information identifies an
+// XM/XiongMai(-derived) camera. These report Manufacturer "H264" and Model
+// "IPC_NT98566_..."; an XMEye NVR that recognizes one switches to the native
+// Sofia protocol instead of ONVIF RTSP.
+func isXiongMaiIdentity(manufacturer, model string) bool {
+	m := strings.ToLower(manufacturer)
+	md := strings.ToLower(model)
+	return m == "h264" || strings.Contains(m, "xiongmai") ||
+		strings.HasPrefix(md, "ipc_nt") || strings.Contains(md, "xiongmai")
+}
+
 func hostOnly(h string) string {
 	if host, _, err := net.SplitHostPort(h); err == nil {
 		return host
@@ -112,8 +134,17 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 		return onvif.DeviceServices(r.Host, prefix, dev.HasPTZ()), nil
 	case onvif.DeviceGetDeviceInformation:
 		info := dev.Information()
+		// Report a NEUTRAL, non-XM manufacturer/model — not the camera's own.
+		// XMEye/XiongMai NVRs that recognize an XM-brand device (Manufacturer
+		// "H264", Model "IPC_NT98566_...") bypass the standard ONVIF
+		// GetStreamUri/RTSP flow and switch to XiongMai's native Sofia protocol
+		// (port 34567 / RTSP on 554), which go2rtc does not serve — so the
+		// channel completes discovery but never streams ("Not Logged In"). A
+		// generic identity keeps such NVRs on the ONVIF RTSP path. Standard
+		// clients (UniFi Protect, Scrypted, Frigate) ignore the manufacturer.
 		// serial = go2rtc device name => stable unique id per emulated camera
-		return onvif.GetDeviceInformationResponse(info.Manufacturer, info.Model, info.Firmware, name), nil
+		manufacturer, model := emulatedIdentity(info.Manufacturer, info.Model)
+		return onvif.GetDeviceInformationResponse(manufacturer, model, info.Firmware, name), nil
 
 	case onvif.ServiceGetServiceCapabilities,
 		onvif.DeviceGetNetworkInterfaces,
