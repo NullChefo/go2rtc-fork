@@ -142,6 +142,28 @@ func (d *Device) TranscodeQuery() string {
 	return q
 }
 
+// OnvifAudioCodec normalises an audio codec name to the ONVIF AudioEncoding
+// enum (G711 / G726 / AAC). Camera sources here are G.711; transcode may
+// produce AAC.
+func OnvifAudioCodec(codec string) string {
+	switch strings.ToLower(codec) {
+	case "aac":
+		return "AAC"
+	case "g726":
+		return "G726"
+	default: // pcma, pcmu, g711, unknown
+		return "G711"
+	}
+}
+
+// TranscodeAudio returns the configured target audio codec ("" if none).
+func (d *Device) TranscodeAudio() string {
+	if d.config.Transcode == nil {
+		return ""
+	}
+	return d.config.Transcode.Audio
+}
+
 // OnvifCodec normalises a codec name (config or parsed) to the ONVIF Encoding
 // form (H264 / H265 / JPEG).
 func OnvifCodec(codec string) string {

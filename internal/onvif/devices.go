@@ -29,6 +29,7 @@ type profileStream struct {
 	width   int    // advertised resolution (real, from the camera)
 	height  int
 	codec   string // effective ONVIF codec the consumer receives (after transcode)
+	audio   string // effective ONVIF audio encoding (G711 / AAC)
 	vsToken string // camera VideoSource token (for imaging proxying)
 }
 
@@ -39,7 +40,7 @@ func profileInfos(device string) []onvif.ProfileInfo {
 	list := deviceStreams[device]
 	infos := make([]onvif.ProfileInfo, 0, len(list))
 	for _, ps := range list {
-		infos = append(infos, onvif.ProfileInfo{Token: ps.stream, Width: ps.width, Height: ps.height, Codec: ps.codec})
+		infos = append(infos, onvif.ProfileInfo{Token: ps.stream, Width: ps.width, Height: ps.height, Codec: ps.codec, Audio: ps.audio})
 	}
 	return infos
 }
@@ -182,6 +183,7 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 	}
 
 	var mapping []profileStream
+	var prefetch []string
 
 	for i, p := range profiles {
 		if !dev.ProfileAllowed(p.Token) {
@@ -198,12 +200,19 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 		srcCodec := onvif.OnvifCodec(p.Codec)
 		transcodeThis := dev.Transcoding() && srcCodec != "JPEG"
 
-		// effective codec advertised to consumers (after any transcode)
+		// effective codecs advertised to consumers (after any transcode);
+		// source cameras speak G.711 audio unless transcoded
 		codec := srcCodec
-		if transcodeThis && dev.TranscodeVideo() != "" {
-			codec = onvif.OnvifCodec(dev.TranscodeVideo())
+		audio := "G711"
+		if transcodeThis {
+			if dev.TranscodeVideo() != "" {
+				codec = onvif.OnvifCodec(dev.TranscodeVideo())
+			}
+			if dev.TranscodeAudio() != "" {
+				audio = onvif.OnvifAudioCodec(dev.TranscodeAudio())
+			}
 		}
-		ps := profileStream{token: p.Token, stream: streamName, width: p.Width, height: p.Height, codec: codec, vsToken: p.VSToken}
+		ps := profileStream{token: p.Token, stream: streamName, width: p.Width, height: p.Height, codec: codec, audio: audio, vsToken: p.VSToken}
 
 		// credential-free source; ResolveURI injects auth into the resolved URL
 		rawSource := "onvif://" + dev.Host() + "?profile=" + url.QueryEscape(p.Token)
@@ -266,17 +275,27 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 		mapping = append(mapping, ps)
 
 		if dev.PrefetchProfile(p.Token) {
-			if err = streams.AddPreload(streamName, ""); err != nil {
+			prefetch = append(prefetch, streamName)
+		}
+	}
+
+	// publish the profile mapping BEFORE warming up prefetch: AddPreload blocks
+	// several seconds per stream (spawns ffmpeg / dials the camera), and ONVIF
+	// clients polling GetProfiles in that window would see an empty device and
+	// give up (XMEye NVRs show the channel as "not logged in").
+	devicesMu.Lock()
+	deviceStreams[name] = mapping
+	devicesMu.Unlock()
+
+	go func() {
+		for _, streamName := range prefetch {
+			if err := streams.AddPreload(streamName, ""); err != nil {
 				log.Warn().Err(err).Msgf("[onvif] device %q prefetch %q", name, streamName)
 			} else {
 				log.Info().Msgf("[onvif] device %q prefetch (always-on) stream %q", name, streamName)
 			}
 		}
-	}
-
-	devicesMu.Lock()
-	deviceStreams[name] = mapping
-	devicesMu.Unlock()
+	}()
 }
 
 // streamToVSToken maps a go2rtc stream name back to the camera's real

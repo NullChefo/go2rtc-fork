@@ -58,6 +58,14 @@ type ProfileInfo struct {
 	Width  int
 	Height int
 	Codec  string // ONVIF Encoding: H264 / H265 / JPEG
+	Audio  string // ONVIF AudioEncoding: G711 / AAC (empty = G711)
+}
+
+func (p ProfileInfo) audioEnc() string {
+	if p.Audio != "" {
+		return p.Audio
+	}
+	return "G711"
 }
 
 func (p ProfileInfo) wh() (int, int) {
@@ -99,17 +107,27 @@ func appendDeviceProfile(e *Envelope, tag string, p ProfileInfo, ptz bool) {
 	tok := escapeXML(p.Token)
 	e.Appendf(`<trt:%s token="%s" fixed="true"><tt:Name>%s</tt:Name>`, tag, tok, tok)
 	appendDeviceVSC(e, "VideoSourceConfiguration", p)
+	// schema order: AudioSourceConfiguration between VSC and VEC. Strict
+	// (gSOAP-based) clients like XMEye NVRs require the audio configurations
+	// and reject profiles without them.
+	e.Appendf(`<tt:AudioSourceConfiguration token="asc_%s"><tt:Name>ASC</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>asrc_%s</tt:SourceToken></tt:AudioSourceConfiguration>`, tok, tok)
 	appendDeviceVEC(e, "VideoEncoderConfiguration", p)
+	e.Appendf(`<tt:AudioEncoderConfiguration token="aec_%s"><tt:Name>AEC</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Bitrate>128</tt:Bitrate><tt:SampleRate>8</tt:SampleRate>%s<tt:SessionTimeout>PT10S</tt:SessionTimeout></tt:AudioEncoderConfiguration>`, tok, p.audioEnc(), multicastBlock)
 	if ptz {
 		e.Append(`<tt:PTZConfiguration token="ptz0"><tt:Name>PTZ</tt:Name><tt:UseCount>1</tt:UseCount><tt:NodeToken>ptz0</tt:NodeToken></tt:PTZConfiguration>`)
 	}
 	e.Appendf(`</trt:%s>`, tag)
 }
 
+// multicastBlock is schema-mandatory inside Video/AudioEncoderConfiguration;
+// strict parsers (XMEye/gSOAP) fail the whole document without it.
+const multicastBlock = `<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address><tt:Port>0</tt:Port><tt:TTL>1</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>`
+
 func appendDeviceVSC(e *Envelope, tag string, p ProfileInfo) {
 	tok := escapeXML(p.Token)
 	w, h := p.wh()
-	e.Appendf(`<tt:%s token="%s" fixed="true"><tt:Name>VSC</tt:Name><tt:SourceToken>%s</tt:SourceToken><tt:Bounds x="0" y="0" width="%d" height="%d"></tt:Bounds></tt:%s>`, tag, tok, tok, w, h, tag)
+	// UseCount is schema-mandatory (Name, UseCount, SourceToken, Bounds)
+	e.Appendf(`<tt:%s token="%s" fixed="true"><tt:Name>VSC</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken><tt:Bounds x="0" y="0" width="%d" height="%d"></tt:Bounds></tt:%s>`, tag, tok, tok, w, h, tag)
 }
 
 func appendDeviceVEC(e *Envelope, tag string, p ProfileInfo) {
@@ -125,6 +143,7 @@ func appendDeviceVEC(e *Envelope, tag string, p ProfileInfo) {
 	default:
 		e.Append(`<tt:H264><tt:GovLength>10</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>`)
 	}
+	e.Append(multicastBlock)
 	e.Appendf(`<tt:SessionTimeout>PT10S</tt:SessionTimeout></tt:%s>`, tag)
 }
 

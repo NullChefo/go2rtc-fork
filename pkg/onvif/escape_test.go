@@ -42,6 +42,20 @@ func TestEmulatedResponsesWellFormed(t *testing.T) {
 	wellFormed(t, DeviceCapabilities("h:1", "/onvif/cam&1", true))
 	wellFormed(t, DeviceServices("h:1", "/onvif/cam&1", true))
 	wellFormed(t, DeviceProfilesResponse([]ProfileInfo{{Token: `cam&1`, Width: 2560, Height: 1440, Codec: "H265"}, {Token: `b"<x`}}, true))
+
+	// strict gSOAP clients (XMEye NVRs) require the schema-mandatory elements
+	// and the audio configurations, or they reject the whole profile document
+	prof := string(DeviceProfilesResponse([]ProfileInfo{{Token: "cam", Codec: "H264", Audio: "AAC"}}, false))
+	for _, want := range []string{
+		"<tt:UseCount>",                 // VideoSourceConfiguration UseCount
+		"<tt:Multicast>",                // mandatory in encoder configurations
+		"<tt:AudioSourceConfiguration",  // XM requires audio configs
+		"<tt:AudioEncoderConfiguration", // ...
+		"<tt:Encoding>AAC</tt:Encoding>",
+		"<tt:SessionTimeout>",
+	} {
+		require.Contains(t, prof, want)
+	}
 	wellFormed(t, DeviceVideoSourcesResponse([]ProfileInfo{{Token: `cam&1`, Width: 2560, Height: 1440}}))
 	wellFormed(t, DeviceVideoEncoderConfigurationsResponse([]ProfileInfo{{Token: `c`, Codec: "H264"}}))
 	wellFormed(t, GetVideoSourcesResponse([]string{`cam&1`}))
