@@ -40,13 +40,17 @@ func profileInfos(device string) []onvif.ProfileInfo {
 	list := deviceStreams[device]
 	infos := make([]onvif.ProfileInfo, 0, len(list))
 	for _, ps := range list {
-		infos = append(infos, onvif.ProfileInfo{Token: ps.stream, Width: ps.width, Height: ps.height, Codec: ps.codec, Audio: ps.audio})
+		// expose the CAMERA's own profile token (e.g. "000"/"001"): XMEye NVRs
+		// derive their channel/stream mapping from the token format and never
+		// request a stream for non-numeric tokens. GetStreamUri/GetSnapshotUri
+		// translate the token back to the go2rtc stream name.
+		infos = append(infos, onvif.ProfileInfo{Token: ps.token, Width: ps.width, Height: ps.height, Codec: ps.codec, Audio: ps.audio})
 	}
 	return infos
 }
 
-// profileInfo looks up one exposed profile by its token (= stream name); falls
-// back to a defaults-only ProfileInfo if unknown.
+// profileInfo looks up one exposed profile by its token (the camera's own
+// profile token); falls back to a defaults-only ProfileInfo if unknown.
 func profileInfo(device, token string) onvif.ProfileInfo {
 	for _, info := range profileInfos(device) {
 		if info.Token == token {
@@ -328,6 +332,26 @@ func streamToToken(device, stream string) string {
 		}
 	}
 	return ""
+}
+
+// tokenToStream maps an emulated profile token (the camera's own token, e.g.
+// "000") to the go2rtc stream name that serves it. GetStreamUri/GetSnapshotUri
+// use this to build the RTSP/snapshot URL. A stream name is accepted too (so
+// pre-token clients still resolve); falls back to the input if unknown.
+func tokenToStream(device, token string) string {
+	devicesMu.Lock()
+	defer devicesMu.Unlock()
+	for _, ps := range deviceStreams[device] {
+		if ps.token == token {
+			return ps.stream
+		}
+	}
+	for _, ps := range deviceStreams[device] {
+		if ps.stream == token {
+			return ps.stream
+		}
+	}
+	return token
 }
 
 // streamBelongsToDevice reports whether an existing stream is backed by an

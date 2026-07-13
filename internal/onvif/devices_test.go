@@ -32,6 +32,32 @@ func TestStreamBelongsToDevice(t *testing.T) {
 	require.False(t, streamBelongsToDevice(foreign, "10.0.0.5:80")) // not an onvif source
 }
 
+// TestExposeCameraToken verifies the emulated device advertises the camera's own
+// profile token (e.g. "000"), like a real XM camera, and that GetStreamUri's
+// token->stream mapping resolves it back to the go2rtc stream name. XMEye NVRs
+// map their channel to numeric main/sub tokens and won't stream otherwise.
+func TestExposeCameraToken(t *testing.T) {
+	devicesMu.Lock()
+	deviceStreams["camx"] = []profileStream{
+		{token: "000", stream: "balcony", width: 2560, height: 1440, codec: "H264"},
+		{token: "001", stream: "balcony_1", width: 704, height: 576, codec: "H264"},
+	}
+	devicesMu.Unlock()
+	t.Cleanup(func() { devicesMu.Lock(); delete(deviceStreams, "camx"); devicesMu.Unlock() })
+
+	infos := profileInfos("camx")
+	require.Len(t, infos, 2)
+	require.Equal(t, "000", infos[0].Token) // camera token, not "balcony"
+	require.Equal(t, "001", infos[1].Token)
+
+	// GetStreamUri/GetSnapshotUri resolve the advertised token back to the stream
+	require.Equal(t, "balcony", tokenToStream("camx", "000"))
+	require.Equal(t, "balcony_1", tokenToStream("camx", "001"))
+	// a stream name still resolves (pre-token clients), unknown falls through
+	require.Equal(t, "balcony", tokenToStream("camx", "balcony"))
+	require.Equal(t, "zzz", tokenToStream("camx", "zzz"))
+}
+
 func TestRemapVideoSourceToken(t *testing.T) {
 	devicesMu.Lock()
 	deviceStreams["camv"] = []profileStream{{token: "000", stream: "camv", vsToken: "RealVS0"}}

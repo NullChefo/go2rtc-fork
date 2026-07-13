@@ -156,13 +156,15 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 		return onvif.DeviceVideoEncoderConfigurationsResponse(infos), nil
 	case onvif.MediaGetStreamUri:
 		// RTSP is always served by go2rtc's rtsp server, not this ONVIF port.
-		// JoinHostPort keeps IPv6 literals bracketed; omit the port if rtsp is
-		// disabled (the device can't stream then, but don't emit "host:/path").
+		// The profile token is the camera's own (e.g. "000"); map it back to the
+		// go2rtc stream name that serves it. JoinHostPort keeps IPv6 literals
+		// bracketed; omit the port if rtsp is disabled (the device can't stream
+		// then, but don't emit "host:/path").
 		host := hostOnly(r.Host)
 		if rtsp.Port != "" {
 			host = net.JoinHostPort(host, rtsp.Port)
 		}
-		uri := "rtsp://" + host + "/" + onvif.FindTagValue(b, "ProfileToken")
+		uri := "rtsp://" + host + "/" + tokenToStream(name, onvif.FindTagValue(b, "ProfileToken"))
 		return onvif.GetStreamUriResponse(uri), nil
 	case onvif.MediaGetSnapshotUri:
 		// snapshots are served by the HTTP API port (a dedicated ONVIF listener
@@ -175,7 +177,7 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 			}
 		}
 		host := net.JoinHostPort(hostOnly(r.Host), strconv.Itoa(port))
-		uri := "http://" + host + "/api/frame.jpeg?src=" + url.QueryEscape(onvif.FindTagValue(b, "ProfileToken")) + "&cache=1s"
+		uri := "http://" + host + "/api/frame.jpeg?src=" + url.QueryEscape(tokenToStream(name, onvif.FindTagValue(b, "ProfileToken"))) + "&cache=1s"
 		return onvif.GetSnapshotUriResponse(uri), nil
 
 	// ---- event service (broker the upstream subscription) ----

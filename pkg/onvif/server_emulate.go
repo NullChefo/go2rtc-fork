@@ -178,7 +178,8 @@ func appendDeviceVEC(e *Envelope, tag string, p ProfileInfo, idx int) {
 	codec := p.enc()
 	// unique token per profile (a multi-profile device exposes several VECs);
 	// 25 fps metadata stays within PAL-mode channel caps on XM NVRs
-	e.Appendf(`<tt:%s token="vec_%s"><tt:Name>V_ENC_%03d</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>0</tt:Quality><tt:RateControl><tt:FrameRateLimit>25</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>8192</tt:BitrateLimit></tt:RateControl>`, tag, escapeXML(p.Token), idx, codec, w, h)
+	// real XM cameras use the profile token as the VEC token too (e.g. "000")
+	e.Appendf(`<tt:%s token="%s"><tt:Name>V_ENC_%03d</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>0</tt:Quality><tt:RateControl><tt:FrameRateLimit>25</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>8192</tt:BitrateLimit></tt:RateControl>`, tag, escapeXML(p.Token), idx, codec, w, h)
 	switch codec {
 	case "H265":
 		e.Append(`<tt:H265><tt:GovLength>10</tt:GovLength><tt:H265Profile>Main</tt:H265Profile></tt:H265>`)
