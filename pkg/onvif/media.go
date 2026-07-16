@@ -12,12 +12,15 @@ import (
 
 // Profile is a parsed ONVIF media profile.
 type Profile struct {
-	Token   string
-	Name    string
-	Width   int
-	Height  int
-	Codec   string // VideoEncoder encoding: H264 / H265 / JPEG
-	VSToken string // VideoSource token (needed to proxy imaging requests)
+	Token            string
+	Name             string
+	Width            int
+	Height           int
+	Codec            string // VideoEncoder encoding: H264 / H265 / JPEG
+	FrameRateLimit   int
+	EncodingInterval int
+	BitrateLimit     int    // upstream encoder bitrate in kbps
+	VSToken          string // VideoSource token (needed to proxy imaging requests)
 }
 
 // reProfileBlock captures each full <...Profiles token="...">...</...Profiles>
@@ -50,12 +53,15 @@ func parseProfiles(b []byte) []Profile {
 			vsToken = FindTagValue(v, "SourceToken")
 		}
 		profiles = append(profiles, Profile{
-			Token:   string(m[1]),
-			Name:    FindTagValue(block, "Name"),   // profile name (first <Name>)
-			Codec:   FindTagValue(vec, "Encoding"), // video encoding, scoped to the VEC
-			Width:   atoi(FindTagValue(vec, "Width")),
-			Height:  atoi(FindTagValue(vec, "Height")),
-			VSToken: vsToken,
+			Token:            string(m[1]),
+			Name:             FindTagValue(block, "Name"),   // profile name (first <Name>)
+			Codec:            FindTagValue(vec, "Encoding"), // video encoding, scoped to the VEC
+			Width:            atoi(FindTagValue(vec, "Width")),
+			Height:           atoi(FindTagValue(vec, "Height")),
+			FrameRateLimit:   atoi(FindTagValue(vec, "FrameRateLimit")),
+			EncodingInterval: atoi(FindTagValue(vec, "EncodingInterval")),
+			BitrateLimit:     atoi(FindTagValue(vec, "BitrateLimit")),
+			VSToken:          vsToken,
 		})
 	}
 	if len(profiles) == 0 {

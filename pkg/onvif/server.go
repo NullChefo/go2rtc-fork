@@ -8,6 +8,17 @@ import (
 
 const ServiceGetServiceCapabilities = "GetServiceCapabilities"
 
+// Compatibility metadata used when go2rtc synthesizes an ONVIF encoder
+// configuration. Some strict NVRs/controllers reject profiles without all
+// three RateControl values (for example, UniFi AI Port reports that channel FPS
+// is missing). These values describe the advertised virtual stream; they don't
+// change the actual encoder bitrate or frame rate.
+const (
+	defaultFrameRateLimit   = 20
+	defaultEncodingInterval = 1
+	defaultBitrateLimit     = 12000
+)
+
 const (
 	DeviceGetCapabilities          = "GetCapabilities"
 	DeviceGetDeviceInformation     = "GetDeviceInformation"
@@ -169,9 +180,9 @@ func GetVideoSourcesResponse(names []string) []byte {
 	e.Append(`<trt:GetVideoSourcesResponse>`)
 	for _, name := range names {
 		e.Appendf(`<trt:VideoSources token="%s">
-	<tt:Framerate>30.000000</tt:Framerate>
+	<tt:Framerate>%d.000000</tt:Framerate>
 	<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>
-</trt:VideoSources>`, escapeXML(name))
+</trt:VideoSources>`, escapeXML(name), defaultFrameRateLimit)
 	}
 	e.Append(`</trt:GetVideoSourcesResponse>`)
 	return e.Bytes()
@@ -222,17 +233,31 @@ func GetVideoEncoderConfigurationResponse() []byte {
 }
 
 func appendVideoEncoderConfiguration(e *Envelope, tag string) {
-	// empty `RateControl` important for UniFi Protect
 	e.Appendf(`<tt:%s token="vec">
 		<tt:Name>VEC</tt:Name>
         <tt:UseCount>1</tt:UseCount>
 		<tt:Encoding>H264</tt:Encoding>
 		<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>
-        <tt:Quality>0</tt:Quality>
-		<tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>8192</tt:BitrateLimit></tt:RateControl>
+        <tt:Quality>0</tt:Quality>`, tag)
+	appendRateControl(e, 0, 0, 0)
+	e.Appendf(`
         <tt:H264><tt:GovLength>10</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>
         <tt:SessionTimeout>PT10S</tt:SessionTimeout>
-	</tt:%s>`, tag, tag)
+	</tt:%s>`, tag)
+}
+
+func appendRateControl(e *Envelope, frameRateLimit, encodingInterval, bitrateLimit int) {
+	if frameRateLimit <= 0 {
+		frameRateLimit = defaultFrameRateLimit
+	}
+	if encodingInterval <= 0 {
+		encodingInterval = defaultEncodingInterval
+	}
+	if bitrateLimit <= 0 {
+		bitrateLimit = defaultBitrateLimit
+	}
+	e.Appendf(`<tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:EncodingInterval>%d</tt:EncodingInterval><tt:BitrateLimit>%d</tt:BitrateLimit></tt:RateControl>`,
+		frameRateLimit, encodingInterval, bitrateLimit)
 }
 
 func GetStreamUriResponse(uri string) []byte {

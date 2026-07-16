@@ -10,6 +10,8 @@ const (
 	EventsCreatePullPointSubscription = "CreatePullPointSubscription"
 	EventsPullMessages                = "PullMessages"
 	EventsRenew                       = "Renew"
+	EventsSetSynchronizationPoint     = "SetSynchronizationPoint"
+	EventsSubscribe                   = "Subscribe"
 	EventsUnsubscribe                 = "Unsubscribe"
 	EventsGetEventProperties          = "GetEventProperties"
 )
@@ -55,13 +57,18 @@ func DeviceServices(host, prefix string, ptz bool) []byte {
 // ProfileInfo is the per-profile data the emulated media service advertises.
 // Token is the exposed token (= the go2rtc stream name a client requests);
 // Width/Height/Codec describe what the client will actually receive (after any
-// transcode), so the advertised metadata matches the real stream.
+// transcode). Rate-control values are copied from the source profile. In
+// particular, BitrateLimit is only an estimate when the stream is transcoded;
+// advertising it does not configure or measure the transcoded encoder.
 type ProfileInfo struct {
-	Token  string
-	Width  int
-	Height int
-	Codec  string // ONVIF Encoding: H264 / H265 / JPEG
-	Audio  string // ONVIF AudioEncoding: G711 / AAC (empty = G711)
+	Token            string
+	Width            int
+	Height           int
+	Codec            string // ONVIF Encoding: H264 / H265 / JPEG
+	Audio            string // ONVIF AudioEncoding: G711 / AAC (empty = G711)
+	FrameRateLimit   int
+	EncodingInterval int
+	BitrateLimit     int // upstream kbps; estimate when transcoding
 }
 
 func (p ProfileInfo) audioEnc() string {
@@ -83,6 +90,13 @@ func (p ProfileInfo) enc() string {
 		return p.Codec
 	}
 	return "H264"
+}
+
+func (p ProfileInfo) frameRateLimit() int {
+	if p.FrameRateLimit > 0 {
+		return p.FrameRateLimit
+	}
+	return defaultFrameRateLimit
 }
 
 // deviceSource models the ONE physical video/audio source shared by all of a
@@ -177,9 +191,10 @@ func appendDeviceVEC(e *Envelope, tag string, p ProfileInfo, idx int) {
 	w, h := p.wh()
 	codec := p.enc()
 	// unique token per profile (a multi-profile device exposes several VECs);
-	// 25 fps metadata stays within PAL-mode channel caps on XM NVRs
+	// compatibility metadata stays within common NVR channel caps
 	// real XM cameras use the profile token as the VEC token too (e.g. "000")
-	e.Appendf(`<tt:%s token="%s"><tt:Name>V_ENC_%03d</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>0</tt:Quality><tt:RateControl><tt:FrameRateLimit>25</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>8192</tt:BitrateLimit></tt:RateControl>`, tag, escapeXML(p.Token), idx, codec, w, h)
+	e.Appendf(`<tt:%s token="%s"><tt:Name>V_ENC_%03d</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>0</tt:Quality>`, tag, escapeXML(p.Token), idx, codec, w, h)
+	appendRateControl(e, p.FrameRateLimit, p.EncodingInterval, p.BitrateLimit)
 	switch codec {
 	case "H265":
 		e.Append(`<tt:H265><tt:GovLength>10</tt:GovLength><tt:H265Profile>Main</tt:H265Profile></tt:H265>`)
@@ -198,7 +213,11 @@ func DeviceVideoSourcesResponse(profiles []ProfileInfo) []byte {
 	src := MainSource(profiles)
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoSourcesResponse>`)
-	e.Appendf(`<trt:VideoSources token="V_SRC_000"><tt:Framerate>25.000000</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources>`, src.W, src.H)
+	frameRateLimit := defaultFrameRateLimit
+	if len(profiles) > 0 {
+		frameRateLimit = profiles[0].frameRateLimit()
+	}
+	e.Appendf(`<trt:VideoSources token="V_SRC_000"><tt:Framerate>%d.000000</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources>`, frameRateLimit, src.W, src.H)
 	e.Append(`</trt:GetVideoSourcesResponse>`)
 	return e.Bytes()
 }
@@ -226,6 +245,14 @@ func DeviceVideoEncoderConfigurationsResponse(profiles []ProfileInfo) []byte {
 		appendDeviceVEC(e, "Configurations", p, i)
 	}
 	e.Append(`</trt:GetVideoEncoderConfigurationsResponse>`)
+	return e.Bytes()
+}
+
+func DeviceVideoEncoderConfigurationResponse(p ProfileInfo, idx int) []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetVideoEncoderConfigurationResponse>`)
+	appendDeviceVEC(e, "Configuration", p, idx)
+	e.Append(`</trt:GetVideoEncoderConfigurationResponse>`)
 	return e.Bytes()
 }
 
@@ -262,6 +289,29 @@ func CreatePullPointSubscriptionResponse(address string, now time.Time) []byte {
 		`<wsnt:CurrentTime>%s</wsnt:CurrentTime><wsnt:TerminationTime>%s</wsnt:TerminationTime>`+
 		`</tev:CreatePullPointSubscriptionResponse>`,
 		escapeXML(address), soapTime(now), soapTime(now.Add(time.Hour)))
+	return e.Bytes()
+}
+
+// SubscribeResponse accepts WS-Notification push subscriptions for compatibility
+// with NVRs that probe both push and PullPoint event modes. The returned
+// subscription-manager address supports Renew/Unsubscribe; event delivery
+// continues through the existing ONVIF PullPoint broker.
+func SubscribeResponse(address string, now time.Time) []byte {
+	e := NewEnvelope()
+	e.Appendf(`<wsnt:SubscribeResponse>`+
+		`<wsnt:SubscriptionReference><wsa:Address>%s</wsa:Address></wsnt:SubscriptionReference>`+
+		`<wsnt:CurrentTime>%s</wsnt:CurrentTime><wsnt:TerminationTime>%s</wsnt:TerminationTime>`+
+		`</wsnt:SubscribeResponse>`,
+		escapeXML(address), soapTime(now), soapTime(now.Add(time.Hour)))
+	return e.Bytes()
+}
+
+// SetSynchronizationPointResponse acknowledges the optional ONVIF event
+// synchronization request. The virtual device has no retained property state to
+// replay, so successful no-op semantics are appropriate.
+func SetSynchronizationPointResponse() []byte {
+	e := NewEnvelope()
+	e.Append(`<tev:SetSynchronizationPointResponse/>`)
 	return e.Bytes()
 }
 
