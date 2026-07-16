@@ -24,13 +24,16 @@ var deviceStreams = map[string][]profileStream{}
 var devicesMu sync.Mutex
 
 type profileStream struct {
-	token   string // camera profile token
-	stream  string // exposed go2rtc stream name (what consumers/ONVIF use)
-	width   int    // advertised resolution (real, from the camera)
-	height  int
-	codec   string // effective ONVIF codec the consumer receives (after transcode)
-	audio   string // effective ONVIF audio encoding (G711 / AAC)
-	vsToken string // camera VideoSource token (for imaging proxying)
+	token            string // camera profile token
+	stream           string // exposed go2rtc stream name (what consumers/ONVIF use)
+	width            int    // advertised resolution (real, from the camera)
+	height           int
+	codec            string // effective ONVIF codec the consumer receives (after transcode)
+	audio            string // effective ONVIF audio encoding (G711 / AAC)
+	frameRateLimit   int    // source rate-control metadata
+	encodingInterval int
+	bitrateLimit     int    // source bitrate estimate; a transcode may differ
+	vsToken          string // camera VideoSource token (for imaging proxying)
 }
 
 // profileInfos builds the ONVIF emulation profile metadata for a device.
@@ -44,7 +47,16 @@ func profileInfos(device string) []onvif.ProfileInfo {
 		// derive their channel/stream mapping from the token format and never
 		// request a stream for non-numeric tokens. GetStreamUri/GetSnapshotUri
 		// translate the token back to the go2rtc stream name.
-		infos = append(infos, onvif.ProfileInfo{Token: ps.token, Width: ps.width, Height: ps.height, Codec: ps.codec, Audio: ps.audio})
+		infos = append(infos, onvif.ProfileInfo{
+			Token:            ps.token,
+			Width:            ps.width,
+			Height:           ps.height,
+			Codec:            ps.codec,
+			Audio:            ps.audio,
+			FrameRateLimit:   ps.frameRateLimit,
+			EncodingInterval: ps.encodingInterval,
+			BitrateLimit:     ps.bitrateLimit,
+		})
 	}
 	return infos
 }
@@ -216,7 +228,18 @@ func registerProfileStreams(name string, dev *onvif.Device) {
 				audio = onvif.OnvifAudioCodec(dev.TranscodeAudio())
 			}
 		}
-		ps := profileStream{token: p.Token, stream: streamName, width: p.Width, height: p.Height, codec: codec, audio: audio, vsToken: p.VSToken}
+		ps := profileStream{
+			token:            p.Token,
+			stream:           streamName,
+			width:            p.Width,
+			height:           p.Height,
+			codec:            codec,
+			audio:            audio,
+			frameRateLimit:   p.FrameRateLimit,
+			encodingInterval: p.EncodingInterval,
+			bitrateLimit:     p.BitrateLimit,
+			vsToken:          p.VSToken,
+		}
 
 		// credential-free source; ResolveURI injects auth into the resolved URL
 		rawSource := "onvif://" + dev.Host() + "?profile=" + url.QueryEscape(p.Token)

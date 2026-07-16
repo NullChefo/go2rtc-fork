@@ -129,7 +129,7 @@ func TestEmulatedSOAPResponseHasContentLength(t *testing.T) {
 func TestExposeCameraToken(t *testing.T) {
 	devicesMu.Lock()
 	deviceStreams["camx"] = []profileStream{
-		{token: "000", stream: "balcony", width: 2560, height: 1440, codec: "H264"},
+		{token: "000", stream: "balcony", width: 2560, height: 1440, codec: "H264", frameRateLimit: 12, encodingInterval: 2, bitrateLimit: 1536},
 		{token: "001", stream: "balcony_1", width: 704, height: 576, codec: "H264"},
 	}
 	devicesMu.Unlock()
@@ -139,6 +139,9 @@ func TestExposeCameraToken(t *testing.T) {
 	require.Len(t, infos, 2)
 	require.Equal(t, "000", infos[0].Token) // camera token, not "balcony"
 	require.Equal(t, "001", infos[1].Token)
+	require.Equal(t, 12, infos[0].FrameRateLimit)
+	require.Equal(t, 2, infos[0].EncodingInterval)
+	require.Equal(t, 1536, infos[0].BitrateLimit)
 
 	// GetStreamUri/GetSnapshotUri resolve the advertised token back to the stream
 	require.Equal(t, "balcony", tokenToStream("camx", "000"))

@@ -192,7 +192,6 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 		onvif.DeviceGetNetworkProtocols,
 		onvif.DeviceGetNTP,
 		onvif.DeviceGetScopes,
-		onvif.MediaGetVideoEncoderConfiguration,
 		onvif.MediaGetAudioEncoderConfigurations,
 		onvif.MediaGetVideoEncoderConfigurationOptions,
 		onvif.MediaGetAudioSources,
@@ -225,6 +224,16 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 		return onvif.DeviceVideoSourceConfigurationResponse(infos), nil
 	case onvif.MediaGetVideoEncoderConfigurations:
 		return onvif.DeviceVideoEncoderConfigurationsResponse(infos), nil
+	case onvif.MediaGetVideoEncoderConfiguration:
+		token := onvif.FindTagValue(b, "ConfigurationToken")
+		idx := 0
+		for i, info := range infos {
+			if info.Token == token {
+				idx = i
+				break
+			}
+		}
+		return onvif.DeviceVideoEncoderConfigurationResponse(profileInfo(name, token), idx), nil
 	case onvif.MediaGetStreamUri:
 		// RTSP is always served by go2rtc's rtsp server, not this ONVIF port.
 		// The profile token is the camera's own (e.g. "000"); map it back to the
@@ -258,6 +267,12 @@ func emulateOperation(operation string, b []byte, name string, dev *onvif.Device
 		id := emuSubscribe(name)
 		addr := "http://" + r.Host + prefix + "/Subscription?Idx=" + id
 		return onvif.CreatePullPointSubscriptionResponse(addr, time.Now()), nil
+	case onvif.EventsSubscribe:
+		id := emuSubscribe(name)
+		addr := "http://" + r.Host + prefix + "/Subscription?Idx=" + id
+		return onvif.SubscribeResponse(addr, time.Now()), nil
+	case onvif.EventsSetSynchronizationPoint:
+		return onvif.SetSynchronizationPointResponse(), nil
 	case onvif.EventsPullMessages:
 		to := 30 * time.Second
 		if s := onvif.FindTagValue(b, "Timeout"); s != "" {

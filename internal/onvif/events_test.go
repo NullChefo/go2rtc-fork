@@ -1,8 +1,11 @@
 package onvif
 
 import (
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 
@@ -79,4 +82,34 @@ func TestEmuSubscriptionDeviceScoping(t *testing.T) {
 	if _, ok := emuPull("camA", id, 0); !ok {
 		t.Fatal("camA's subscription should still exist")
 	}
+}
+
+func TestEventCompatibilityOperations(t *testing.T) {
+	dev, err := onvif.NewDevice(onvif.DeviceConfig{URL: "onvif://127.0.0.1"})
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(deviceONVIFHandler("camevent", dev))
+	defer srv.Close()
+
+	post := func(body string) string {
+		t.Helper()
+		resp, err := srv.Client().Post(
+			srv.URL+"/onvif/event_service",
+			"application/soap+xml",
+			strings.NewReader(body),
+		)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		b, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return string(b)
+	}
+
+	subscribe := post(`<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2"><s:Body><wsnt:Subscribe/></s:Body></s:Envelope>`)
+	require.Contains(t, subscribe, "<wsnt:SubscribeResponse>")
+	require.Contains(t, subscribe, "/onvif/Subscription?Idx=")
+
+	syncPoint := post(`<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tev="http://www.onvif.org/ver10/events/wsdl"><s:Body><tev:SetSynchronizationPoint/></s:Body></s:Envelope>`)
+	require.Contains(t, syncPoint, "<tev:SetSynchronizationPointResponse/>")
 }
